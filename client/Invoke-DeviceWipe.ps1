@@ -27,15 +27,21 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)] [string] $ApiUrl,
+    [Parameter(Mandatory = $false)] [string] $ApiUrl,
     [string] $CertificateThumbprint,
     [string] $CertificateSubjectLike,
-    [Parameter(Mandatory = $true)] [string] $FunctionKey,
-    [switch] $Silent
+    [Parameter(Mandatory = $false)] [string] $FunctionKey,
+    [switch] $Silent,
+    [switch] $DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+if (-not $DryRun) {
+    if (-not $ApiUrl)      { throw "-ApiUrl is required (unless -DryRun)." }
+    if (-not $FunctionKey) { throw "-FunctionKey is required (unless -DryRun)." }
+}
 
 #region helpers
 
@@ -204,18 +210,30 @@ Stai per richiedere il RESET DI FABBRICA di questo dispositivo via Microsoft Int
 #endregion
 
 Write-Host 'Collecting device identity...' -ForegroundColor Cyan
-$deviceName = $env:COMPUTERNAME
-$entraId    = Get-EntraDeviceId
-$intuneId   = Get-IntuneDeviceId
+if ($DryRun) {
+    $deviceName = 'LAPTOP-DEMO-01'
+    $entraId    = '8f3b6c2e-7a91-4d2f-9b1e-5c0a4d6e8f12'
+    $intuneId   = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d'
+} else {
+    $deviceName = $env:COMPUTERNAME
+    $entraId    = Get-EntraDeviceId
+    $intuneId   = Get-IntuneDeviceId
+}
 Write-Host ("  Device      : {0}" -f $deviceName)
 Write-Host ("  EntraDevId  : {0}" -f $entraId)
 Write-Host ("  IntuneDevId : {0}" -f $intuneId)
 
 if (-not $Silent) {
-    if (-not (Show-WipeConfirmation -DeviceName $deviceName -EntraDeviceId $entraId -IntuneDeviceId $intuneId)) {
+    $confirmed = Show-WipeConfirmation -DeviceName $deviceName -EntraDeviceId $entraId -IntuneDeviceId $intuneId
+    if (-not $confirmed) {
         Write-Host 'Operazione annullata dall''utente.' -ForegroundColor Yellow
         return
     }
+}
+
+if ($DryRun) {
+    Write-Host 'DryRun: skipping certificate selection and API call.' -ForegroundColor Yellow
+    return
 }
 
 $cert = Get-ClientCertificate -Thumb $CertificateThumbprint -SubjectLike $CertificateSubjectLike

@@ -1,0 +1,49 @@
+[
+  {
+    "name": "WipeProcessor",
+    "scriptFile": "IntuneWipeApi.dll",
+    "entryPoint": "IntuneWipeApi.Functions.WipeProcessorFunction.Run",
+    "language": "dotnet-isolated",
+    "properties": {
+      "IsCodeless": false
+    },
+    "bindings": [
+      {
+        "name": "messageJson",
+        "direction": "In",
+        "type": "queueTrigger",
+        "dataType": "String",
+        "queueName": "%Queue:WipeQueueName%",
+        "connection": "AzureWebJobsStorage",
+        "properties": {}
+      }
+    ]
+  },
+  {
+    "name": "WipeRequest",
+    "scriptFile": "IntuneWipeApi.dll",
+    "entryPoint": "IntuneWipeApi.Functions.WipeRequestFunction.Run",
+    "language": "dotnet-isolated",
+    "properties": {
+      "IsCodeless": false
+    },
+    "bindings": [
+      {
+        "name": "req",
+        "direction": "In",
+        "type": "httpTrigger",
+        "authLevel": "Function",
+        "methods": [
+          "post"
+        ],
+        "route": "wipe",
+        "properties": {}
+      },
+      {
+        "name": "$return",
+        "type": "http",
+        "direction": "Out"
+      }
+    ]
+  }
+]
