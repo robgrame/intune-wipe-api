@@ -170,6 +170,11 @@ Lo script:
    - avviso esplicito di irreversibilità e ~90 minuti di downtime
    - checkbox di consapevolezza obbligatoria
    - input testuale che richiede di digitare `WIPE` per abilitare il bottone
+
+   <p align="center">
+     <img src="docs/dialog-screenshot.png" alt="Schermata della finestra WinForms di conferma con warning rosso, dettagli del device, checkbox di consapevolezza, campo testuale 'WIPE' e pulsante 'Esegui reset' abilitato" width="520" />
+   </p>
+
 4. Sceglie il certificato dispositivo da `Cert:\LocalMachine\My`
 5. Invoca l'API con `Invoke-RestMethod -Certificate` e mostra il
    `correlationId` per riferimento al supporto
