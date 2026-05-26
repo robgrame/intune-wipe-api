@@ -288,10 +288,20 @@ traces
 │       ├── WipeRequest.cs
 │       └── WipeQueueMessage.cs
 ├── client/
-│   └── Invoke-DeviceWipe.ps1           # PS 5.1 con UI WinForms
+│   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint)
+│   └── WipeConfirmationDialog.ps1      # WinForms dialog (shared module)
 └── docs/
+    ├── architecture.png
+    ├── dialog-screenshot.png
+    ├── Capture-DialogScreenshot.ps1    # rigenera lo screenshot del dialog
     └── Presentazione-Soluzione-Intune-Self-Wipe.eml
 ```
+
+> **Nota sull'email di presentazione** (`docs/Presentazione-Soluzione-Intune-Self-Wipe.eml`):
+> il file include `X-Unsent: 1` per aprirsi come bozza editabile in **Outlook classic**
+> (campo "A:" modificabile, pulsante Invia attivo). Il nuovo Outlook e Outlook Web
+> aprono i `.eml` in sola lettura: usare Outlook classic per modificare il destinatario
+> prima dell'invio, oppure copiare il corpo HTML in una nuova mail.
 
 ## Roadmap
 
