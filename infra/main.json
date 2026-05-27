@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.42.1.51946",
-      "templateHash": "6648486045653260264"
+      "version": "0.43.8.12551",
+      "templateHash": "2357589139677452887"
     }
   },
   "parameters": {
@@ -26,18 +26,89 @@
         "description": "Tenant ID where Graph calls are made"
       }
     },
-    "allowedCertIssuer": {
-      "type": "string",
-      "defaultValue": "CN=Intune SCEP CA",
-      "metadata": {
-        "description": "Issuer DN allowed for client certificates (Intune SCEP CA)"
-      }
-    },
-    "allowedCertThumbprints": {
+    "trustedCaThumbprints": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Comma-separated list of allowed client cert thumbprints (optional)"
+        "description": "Comma-separated list of trusted CA certificate thumbprints (root and/or intermediate). At least one must appear in the client certificate chain. Required unless trustedCaCertificatesBase64 is provided."
+      }
+    },
+    "trustedCaCertificatesBase64": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Comma-separated list of base64-encoded DER CA certificates loaded into a custom trust store (no dependency on the machine trust store). Optional alternative or complement to trustedCaThumbprints."
+      }
+    },
+    "allowedLeafThumbprints": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional comma-separated list of leaf certificate thumbprints to pin (defense-in-depth). Empty disables leaf pinning."
+      }
+    },
+    "checkRevocation": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable CRL/OCSP revocation checks on the client certificate chain."
+      }
+    },
+    "revocationMode": {
+      "type": "string",
+      "defaultValue": "Online",
+      "allowedValues": [
+        "Online",
+        "Offline",
+        "NoCheck"
+      ],
+      "metadata": {
+        "description": "Revocation lookup mode: Online | Offline | NoCheck"
+      }
+    },
+    "revocationFlag": {
+      "type": "string",
+      "defaultValue": "ExcludeRoot",
+      "allowedValues": [
+        "ExcludeRoot",
+        "EntireChain",
+        "EndCertificateOnly"
+      ],
+      "metadata": {
+        "description": "Revocation scope: ExcludeRoot | EntireChain | EndCertificateOnly"
+      }
+    },
+    "requireClientAuthEku": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Require Client Authentication EKU (1.3.6.1.5.5.7.3.2) on the client certificate."
+      }
+    },
+    "deviceIdBindingClaim": {
+      "type": "string",
+      "defaultValue": "SubjectCN",
+      "allowedValues": [
+        "SubjectCN",
+        "SanDns",
+        "SanUri",
+        "Disabled"
+      ],
+      "metadata": {
+        "description": "Which claim from the client certificate identifies the device. SubjectCN expects CN=<entraDeviceId GUID>. Disabled turns off cert<->device binding (NOT recommended)."
+      }
+    },
+    "maxTimestampSkewSeconds": {
+      "type": "int",
+      "defaultValue": 300,
+      "metadata": {
+        "description": "Maximum acceptable clock skew (seconds) between client X-Request-Timestamp and server time."
+      }
+    },
+    "allowedGroupId": {
+      "type": "string",
+      "metadata": {
+        "description": "Object Id of the Entra ID security group whose member devices are authorized to self-wipe"
       }
     },
     "keepEnrollmentData": {
@@ -51,22 +122,37 @@
       "type": "bool",
       "defaultValue": false
     },
-    "useProtectedWipe": {
-      "type": "bool",
-      "defaultValue": true
+    "wipeQueueName": {
+      "type": "string",
+      "defaultValue": "wipe-requests",
+      "metadata": {
+        "description": "Storage queue name for wipe requests"
+      }
+    },
+    "ledgerContainerName": {
+      "type": "string",
+      "defaultValue": "wipe-ledger",
+      "metadata": {
+        "description": "Blob container name used as the idempotency ledger for wipe operations"
+      }
     }
   },
   "variables": {
     "suffix": "[uniqueString(resourceGroup().id)]",
-    "storageName": "[toLower(substring(format('{0}st{1}', parameters('namePrefix'), variables('suffix')), 0, 24))]",
-    "funcName": "[toLower(format('{0}-func-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stWebRaw": "[toLower(format('{0}stw{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stWebName": "[if(greater(length(variables('stWebRaw')), 24), substring(variables('stWebRaw'), 0, 24), variables('stWebRaw'))]",
+    "stProcRaw": "[toLower(format('{0}stp{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stProcName": "[if(greater(length(variables('stProcRaw')), 24), substring(variables('stProcRaw'), 0, 24), variables('stProcRaw'))]",
+    "webName": "[toLower(format('{0}-web-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "procName": "[toLower(format('{0}-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planName": "[toLower(format('{0}-plan-{1}', parameters('namePrefix'), variables('suffix')))]",
     "aiName": "[toLower(format('{0}-ai-{1}', parameters('namePrefix'), variables('suffix')))]",
     "lawName": "[toLower(format('{0}-law-{1}', parameters('namePrefix'), variables('suffix')))]",
     "uamiName": "[toLower(format('{0}-uami-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "tableDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
+    "uamiWebName": "[toLower(format('{0}-uami-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "blobDataOwner": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
-    "queueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]"
+    "queueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
+    "queueDataMessageSender": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')]"
   },
   "resources": [
     {
@@ -98,7 +184,7 @@
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
-      "name": "[variables('storageName')]",
+      "name": "[variables('stWebName')]",
       "location": "[parameters('location')]",
       "sku": {
         "name": "Standard_LRS"
@@ -107,29 +193,73 @@
       "properties": {
         "minimumTlsVersion": "TLS1_2",
         "allowBlobPublicAccess": false,
-        "allowSharedKeyAccess": true
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "supportsHttpsTrafficOnly": true
       }
     },
     {
-      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "name": "[variables('stProcName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stProcName'), 'default')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]"
       ]
     },
     {
-      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
       "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', 'allowedDevices')]",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('wipeQueueName'))]",
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', variables('storageName'), 'default')]"
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices', variables('stProcName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stProcName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stProcName'), 'default')]"
       ]
     },
     {
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('uamiWebName')]",
       "location": "[parameters('location')]"
     },
     {
@@ -149,26 +279,27 @@
     {
       "type": "Microsoft.Web/sites",
       "apiVersion": "2023-12-01",
-      "name": "[variables('funcName')]",
+      "name": "[variables('webName')]",
       "location": "[parameters('location')]",
       "kind": "functionapp",
       "identity": {
         "type": "UserAssigned",
         "userAssignedIdentities": {
-          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')))]": {}
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')))]": {}
         }
       },
       "properties": {
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
         "httpsOnly": true,
         "clientCertEnabled": true,
-        "clientCertMode": "Optional",
-        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]",
+        "clientCertMode": "Required",
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
         "siteConfig": {
           "minTlsVersion": "1.2",
           "ftpsState": "Disabled",
-          "netFrameworkVersion": "v8.0",
+          "netFrameworkVersion": "v10.0",
           "use32BitWorkerProcess": false,
+          "scmIpSecurityRestrictionsUseMain": true,
           "appSettings": [
             {
               "name": "FUNCTIONS_EXTENSION_VERSION",
@@ -184,7 +315,134 @@
             },
             {
               "name": "AzureWebJobsStorage__accountName",
-              "value": "[variables('storageName')]"
+              "value": "[variables('stWebName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "AzureWebJobsStorage__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "AZURE_CLIENT_ID",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "App__Role",
+              "value": "web"
+            },
+            {
+              "name": "AzureWebJobs.WipeProcessor.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "Queue__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Queue__WipeQueueName",
+              "value": "[parameters('wipeQueueName')]"
+            },
+            {
+              "name": "ClientCert__TrustedCaThumbprints",
+              "value": "[parameters('trustedCaThumbprints')]"
+            },
+            {
+              "name": "ClientCert__TrustedCaCertificates",
+              "value": "[parameters('trustedCaCertificatesBase64')]"
+            },
+            {
+              "name": "ClientCert__AllowedLeafThumbprints",
+              "value": "[parameters('allowedLeafThumbprints')]"
+            },
+            {
+              "name": "ClientCert__CheckRevocation",
+              "value": "[string(parameters('checkRevocation'))]"
+            },
+            {
+              "name": "ClientCert__RevocationMode",
+              "value": "[parameters('revocationMode')]"
+            },
+            {
+              "name": "ClientCert__RevocationFlag",
+              "value": "[parameters('revocationFlag')]"
+            },
+            {
+              "name": "ClientCert__RequireClientAuthEku",
+              "value": "[string(parameters('requireClientAuthEku'))]"
+            },
+            {
+              "name": "ClientCert__RequireClientCert",
+              "value": "true"
+            },
+            {
+              "name": "ClientCert__TrustForwardedHeader",
+              "value": "false"
+            },
+            {
+              "name": "ClientCert__DeviceIdBindingClaim",
+              "value": "[parameters('deviceIdBindingClaim')]"
+            },
+            {
+              "name": "Replay__MaxTimestampSkewSeconds",
+              "value": "[string(parameters('maxTimestampSkewSeconds'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('procName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "httpsOnly": true,
+        "clientCertEnabled": false,
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]",
+        "siteConfig": {
+          "minTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "netFrameworkVersion": "v10.0",
+          "use32BitWorkerProcess": false,
+          "scmIpSecurityRestrictionsUseMain": true,
+          "appSettings": [
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "dotnet-isolated"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "1"
+            },
+            {
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('stProcName')]"
             },
             {
               "name": "AzureWebJobsStorage__credential",
@@ -203,32 +461,40 @@
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
             },
             {
-              "name": "AllowedDevicesTable__AccountName",
-              "value": "[variables('storageName')]"
+              "name": "App__Role",
+              "value": "proc"
             },
             {
-              "name": "AllowedDevicesTable__TableName",
-              "value": "allowedDevices"
-            },
-            {
-              "name": "AllowedDevicesTable__PartitionKey",
-              "value": "default"
-            },
-            {
-              "name": "ClientCert__AllowedThumbprints",
-              "value": "[parameters('allowedCertThumbprints')]"
-            },
-            {
-              "name": "ClientCert__AllowedIssuer",
-              "value": "[parameters('allowedCertIssuer')]"
-            },
-            {
-              "name": "ClientCert__RequireClientCert",
+              "name": "AzureWebJobs.WipeRequest.Disabled",
               "value": "true"
+            },
+            {
+              "name": "Queue__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Queue__WipeQueueName",
+              "value": "[parameters('wipeQueueName')]"
+            },
+            {
+              "name": "Idempotency__BlobContainer",
+              "value": "[parameters('ledgerContainerName')]"
+            },
+            {
+              "name": "Idempotency__StorageAccount",
+              "value": "[variables('stProcName')]"
             },
             {
               "name": "Graph__TenantId",
               "value": "[parameters('graphTenantId')]"
+            },
+            {
+              "name": "Graph__ManagedIdentityClientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "Wipe__AllowedGroupId",
+              "value": "[parameters('allowedGroupId')]"
             },
             {
               "name": "Wipe__KeepEnrollmentData",
@@ -237,10 +503,6 @@
             {
               "name": "Wipe__KeepUserData",
               "value": "[string(parameters('keepUserData'))]"
-            },
-            {
-              "name": "Wipe__UseProtectedWipe",
-              "value": "[string(parameters('useProtectedWipe'))]"
             }
           ]
         }
@@ -248,76 +510,119 @@
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
       ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'table')]",
-      "properties": {
-        "roleDefinitionId": "[variables('tableDataContributor')]",
-        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
-        "principalType": "ServicePrincipal"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'blob')]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'blob')]",
       "properties": {
         "roleDefinitionId": "[variables('blobDataOwner')]",
         "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
       ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'queue')]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'queue')]",
       "properties": {
         "roleDefinitionId": "[variables('queueDataContributor')]",
         "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'blob')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataOwner')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'queue-send')]",
+      "properties": {
+        "roleDefinitionId": "[variables('queueDataMessageSender')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeQueueName'))]"
       ]
     }
   ],
   "outputs": {
-    "functionAppName": {
+    "webAppName": {
       "type": "string",
-      "value": "[variables('funcName')]"
+      "value": "[variables('webName')]"
     },
-    "functionAppHostname": {
+    "webAppHostname": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Web/sites', variables('funcName')), '2023-12-01').defaultHostName]"
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('webName')), '2023-12-01').defaultHostName]"
     },
-    "uamiClientId": {
+    "procAppName": {
+      "type": "string",
+      "value": "[variables('procName')]"
+    },
+    "procAppHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('procName')), '2023-12-01').defaultHostName]"
+    },
+    "uamiWorkerClientId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
     },
-    "uamiPrincipalId": {
+    "uamiWorkerPrincipalId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]"
     },
-    "storageAccount": {
+    "uamiWebClientId": {
       "type": "string",
-      "value": "[variables('storageName')]"
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').clientId]"
+    },
+    "uamiWebPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]"
+    },
+    "storageWebAccount": {
+      "type": "string",
+      "value": "[variables('stWebName')]"
+    },
+    "storageProcAccount": {
+      "type": "string",
+      "value": "[variables('stProcName')]"
+    },
+    "wipeQueueName": {
+      "type": "string",
+      "value": "[parameters('wipeQueueName')]"
+    },
+    "ledgerContainerName": {
+      "type": "string",
+      "value": "[parameters('ledgerContainerName')]"
     }
   }
 }

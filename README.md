@@ -49,11 +49,22 @@ e chiama Microsoft Graph.
 
 L'API HTTP pubblica e il worker che chiama Microsoft Graph girano in **due
 Function App distinte** (`*-web-*` e `*-proc-*`) sullo stesso piano EP1 ma
-con identità, permessi e configurazione separati. Stesso pacchetto deployato
-su entrambe: i due setting `AzureWebJobs.WipeProcessor.Disabled=1` (web) e
-`AzureWebJobs.WipeRequest.Disabled=1` (worker) selezionano quale function è
-attiva su quale app. Risultato: la app esposta su Internet non ha né i
-permessi Graph né i ruoli RBAC per leggere/cancellare messaggi in coda.
+con identità, permessi, **storage account separati** e configurazione separata.
+Stesso pacchetto deployato su entrambe: i due setting
+`AzureWebJobs.WipeProcessor.Disabled=1` (web) e
+`AzureWebJobs.WipeRequest.Disabled=1` (worker), più il guard in-code
+`AppRoleGuard` (legge `App__Role`), selezionano quale function è attiva
+su quale app. Risultato:
+
+- La app pubblica scrive sul proprio `AzureWebJobsStorage` (`*stw*`) e non ha
+  alcun permesso sullo storage del worker (`*stp*`) tranne `Queue Data Message
+  Sender` **scoped sulla singola coda** `wipe-requests` — non può
+  leggere/cancellare messaggi, non può toccare il ledger di idempotenza,
+  non può sovrascrivere il pacchetto deployato del worker.
+- Il worker ha `Storage Blob Data Owner` + `Storage Queue Data Contributor`
+  solo sul proprio storage account.
+- Anche se la superficie pubblica venisse compromessa, l'attaccante non può
+  pilotare Graph, manomettere il ledger, né iniettare codice nel worker.
 
 ## Controlli di sicurezza in profondità
 
@@ -116,7 +127,7 @@ az deployment group create `
 
 > **Importante**: `trustedCaThumbprints` (o `trustedCaCertificatesBase64`) **deve** essere valorizzato: senza un trust anchor configurato la validazione cert fallisce in modo fail-closed.
 
-Output utili: `webAppName`, `webAppHostname`, `procAppName`, `procAppHostname`, `uamiWorkerPrincipalId`, `uamiWebPrincipalId`, `storageAccount`, `wipeQueueName`, `ledgerContainerName`.
+Output utili: `webAppName`, `webAppHostname`, `procAppName`, `procAppHostname`, `uamiWorkerPrincipalId`, `uamiWebPrincipalId`, `storageWebAccount`, `storageProcAccount`, `wipeQueueName`, `ledgerContainerName`.
 
 ### 3. Concedi i permessi Graph alla Managed Identity (solo worker)
 

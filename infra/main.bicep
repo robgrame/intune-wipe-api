@@ -54,8 +54,10 @@ param wipeQueueName string = 'wipe-requests'
 param ledgerContainerName string = 'wipe-ledger'
 
 var suffix = uniqueString(resourceGroup().id)
-var storageNameRaw = toLower('${namePrefix}st${suffix}')
-var storageName    = length(storageNameRaw) > 24 ? substring(storageNameRaw, 0, 24) : storageNameRaw
+var stWebRaw = toLower('${namePrefix}stw${suffix}')
+var stWebName = length(stWebRaw) > 24 ? substring(stWebRaw, 0, 24) : stWebRaw
+var stProcRaw = toLower('${namePrefix}stp${suffix}')
+var stProcName = length(stProcRaw) > 24 ? substring(stProcRaw, 0, 24) : stProcRaw
 var webName    = toLower('${namePrefix}-web-${suffix}')
 var procName   = toLower('${namePrefix}-proc-${suffix}')
 var planName   = toLower('${namePrefix}-plan-${suffix}')
@@ -77,8 +79,28 @@ resource ai 'Microsoft.Insights/components@2020-02-02' = {
   properties: { Application_Type: 'web', WorkspaceResourceId: law.id }
 }
 
-resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: storageName
+// Web app's runtime storage. Holds ONLY AzureWebJobsStorage data (host lease,
+// run-from-package zip, secrets). The web identity has Blob Data Owner here
+// because the Functions host requires it; this account is isolated from the
+// worker's deployment artifact and from the wipe ledger.
+resource storageWeb 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stWebName
+  location: location
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Enabled'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+// Worker app's runtime storage. Also hosts the wipe queue (web identity has
+// Sender-only on the queue resource) and the idempotency ledger container.
+resource storageProc 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stProcName
   location: location
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
@@ -92,7 +114,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 }
 
 resource queueSvc 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
-  parent: storage
+  parent: storageProc
   name: 'default'
 }
 
@@ -102,7 +124,7 @@ resource wipeQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-
 }
 
 resource blobSvc 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
-  parent: storage
+  parent: storageProc
   name: 'default'
 }
 
@@ -161,7 +183,7 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME',    value: 'dotnet-isolated' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE',    value: '1' }
-        { name: 'AzureWebJobsStorage__accountName', value: storage.name }
+        { name: 'AzureWebJobsStorage__accountName', value: storageWeb.name }
         { name: 'AzureWebJobsStorage__credential',  value: 'managedidentity' }
         { name: 'AzureWebJobsStorage__clientId',    value: uamiWeb.properties.clientId }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
@@ -170,7 +192,10 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'App__Role', value: 'web' }
         // Selector: keep only the HTTP trigger on this app.
         { name: 'AzureWebJobs.WipeProcessor.Disabled', value: 'true' }
-        // Queue write (enqueue only — identity has Sender role).
+        // Queue write (enqueue only — identity has Sender role on the queue
+        // resource of the *worker's* storage account, not on this app's runtime
+        // storage).
+        { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
         // Client cert / replay protection (HTTP surface).
         { name: 'ClientCert__TrustedCaThumbprints',    value: trustedCaThumbprints }
@@ -217,7 +242,7 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME',    value: 'dotnet-isolated' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE',    value: '1' }
-        { name: 'AzureWebJobsStorage__accountName', value: storage.name }
+        { name: 'AzureWebJobsStorage__accountName', value: storageProc.name }
         { name: 'AzureWebJobsStorage__credential',  value: 'managedidentity' }
         { name: 'AzureWebJobsStorage__clientId',    value: uami.properties.clientId }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
@@ -226,10 +251,11 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'App__Role', value: 'proc' }
         // Selector: keep only the queue trigger on this app.
         { name: 'AzureWebJobs.WipeRequest.Disabled', value: 'true' }
-        // Queue + ledger.
+        // Queue + ledger live in this app's own storage account.
+        { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
         { name: 'Idempotency__BlobContainer', value: ledgerContainerName }
-        { name: 'Idempotency__StorageAccount', value: storage.name }
+        { name: 'Idempotency__StorageAccount', value: storageProc.name }
         // Microsoft Graph wipe call.
         { name: 'Graph__TenantId', value: graphTenantId }
         { name: 'Graph__ManagedIdentityClientId', value: uami.properties.clientId }
@@ -241,34 +267,37 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-// RBAC: worker identity → full data-plane on storage (Functions runtime needs
-// blob lease + queue control; app needs queue read/delete + blob ledger write).
+// RBAC: worker identity → full data-plane on its own storage account only
+// (Functions runtime blob lease + queue read/delete for the listener + ledger
+// write). No access to the web app's runtime storage.
 var blobDataOwner         = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 var queueDataContributor  = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 // Sender is enqueue-only — does NOT allow read/peek/delete on the queue.
 var queueDataMessageSender = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')
 
 resource raProcBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, uami.id, 'blob')
-  scope: storage
+  name: guid(storageProc.id, uami.id, 'blob')
+  scope: storageProc
   properties: { roleDefinitionId: blobDataOwner, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
 }
 resource raProcQueue 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, uami.id, 'queue')
-  scope: storage
+  name: guid(storageProc.id, uami.id, 'queue')
+  scope: storageProc
   properties: { roleDefinitionId: queueDataContributor, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
 }
 
-// RBAC: web identity → blob (Functions runtime needs it for distributed lease
-// on AzureWebJobsStorage) + Queue Data Message Sender ONLY (enqueue, no read).
+// RBAC: web identity → Blob Data Owner ONLY on its own runtime storage
+// (Functions host needs it for distributed lease / run-from-package). It has
+// NO permission on the worker's storage account except Queue Data Message
+// Sender scoped narrowly to the single wipe queue resource — enqueue only.
 resource raWebBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, uamiWeb.id, 'blob')
-  scope: storage
+  name: guid(storageWeb.id, uamiWeb.id, 'blob')
+  scope: storageWeb
   properties: { roleDefinitionId: blobDataOwner, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
 }
 resource raWebQueueSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, uamiWeb.id, 'queue-send')
-  scope: storage
+  name: guid(wipeQueue.id, uamiWeb.id, 'queue-send')
+  scope: wipeQueue
   properties: { roleDefinitionId: queueDataMessageSender, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
 }
 
@@ -280,6 +309,7 @@ output uamiWorkerClientId string = uami.properties.clientId
 output uamiWorkerPrincipalId string = uami.properties.principalId
 output uamiWebClientId string = uamiWeb.properties.clientId
 output uamiWebPrincipalId string = uamiWeb.properties.principalId
-output storageAccount string = storage.name
+output storageWebAccount string = storageWeb.name
+output storageProcAccount string = storageProc.name
 output wipeQueueName string = wipeQueueName
 output ledgerContainerName string = ledgerContainerName

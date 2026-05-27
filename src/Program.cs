@@ -38,7 +38,13 @@ var host = new HostBuilder()
         {
             var cred = sp.GetRequiredService<TokenCredential>();
             var queueName = cfg["Queue:WipeQueueName"] ?? "wipe-requests";
-            var account = cfg["AzureWebJobsStorage__accountName"] ?? cfg["Idempotency:StorageAccount"];
+            // Prefer an explicit Queue:StorageAccount so the web app can target a
+            // *different* storage account (proc's) than its own AzureWebJobsStorage.
+            // This is the privilege-isolation boundary: the web identity only has
+            // Queue Data Message Sender scoped to the wipe queue on that account.
+            var account = cfg["Queue:StorageAccount"]
+                ?? cfg["AzureWebJobsStorage__accountName"]
+                ?? cfg["Idempotency:StorageAccount"];
             var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.None };
             QueueClient client;
             if (string.IsNullOrWhiteSpace(account))
