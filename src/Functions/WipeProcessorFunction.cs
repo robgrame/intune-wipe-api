@@ -33,6 +33,18 @@ public sealed class WipeProcessorFunction
         [QueueTrigger("%Queue:WipeQueueName%", Connection = "AzureWebJobsStorage")] string messageJson,
         CancellationToken ct)
     {
+        // 0) App role guard: this function may run ONLY on the worker app.
+        //    Throwing without ack releases the message back to the queue so the
+        //    correctly-configured worker app can pick it up; after 5 retries it
+        //    moves to the poison queue and stops bouncing.
+        if (!AppRoleGuard.IsAllowed(AppRoleGuard.Proc))
+        {
+            _log.LogError("AUDIT denied reason=app-role-mismatch expected={Expected} actual={Actual}",
+                AppRoleGuard.Proc, AppRoleGuard.CurrentRole);
+            throw new InvalidOperationException(
+                $"App role mismatch: this Function App is not the wipe processor (App__Role='{AppRoleGuard.CurrentRole}')");
+        }
+
         var msg = JsonSerializer.Deserialize<WipeQueueMessage>(messageJson)
             ?? throw new InvalidOperationException("Empty/invalid queue payload");
 

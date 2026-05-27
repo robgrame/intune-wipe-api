@@ -42,8 +42,18 @@ e chiama Microsoft Graph.
 | 3 | **Azure Storage Queue** `wipe-requests` | Disaccoppia ricezione ed esecuzione; retry automatici, dead-letter su `wipe-requests-poison`. |
 | 4 | **`WipeProcessor`** (Queue trigger, non esposta) | Risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`. Classifica errori Graph transient/permanent. |
 | 5 | **Blob `wipe-ledger`** | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche a fronte di retry queue at-least-once. |
-| 6 | **User-Assigned Managed Identity** | Identità unica per Storage (Blob+Queue Data) e Graph. Nessun secret. |
+| 6 | **Due User-Assigned Managed Identity** | `uami-web` (Function App pubblica) ha **solo** `Storage Queue Data Message Sender` sulla coda — niente Graph. `uami` (worker) ha `Storage Blob Data Owner` + `Storage Queue Data Contributor` + i consent Microsoft Graph. Anche se la superficie pubblica venisse compromessa, l'attaccante non può pilotare il wipe via Graph. |
 | 7 | **Application Insights** | Audit completo con `correlationId`. |
+
+### Isolamento delle due Function App
+
+L'API HTTP pubblica e il worker che chiama Microsoft Graph girano in **due
+Function App distinte** (`*-web-*` e `*-proc-*`) sullo stesso piano EP1 ma
+con identità, permessi e configurazione separati. Stesso pacchetto deployato
+su entrambe: i due setting `AzureWebJobs.WipeProcessor.Disabled=1` (web) e
+`AzureWebJobs.WipeRequest.Disabled=1` (worker) selezionano quale function è
+attiva su quale app. Risultato: la app esposta su Internet non ha né i
+permessi Graph né i ruoli RBAC per leggere/cancellare messaggi in coda.
 
 ## Controlli di sicurezza in profondità
 
@@ -106,12 +116,15 @@ az deployment group create `
 
 > **Importante**: `trustedCaThumbprints` (o `trustedCaCertificatesBase64`) **deve** essere valorizzato: senza un trust anchor configurato la validazione cert fallisce in modo fail-closed.
 
-Output utili: `functionAppName`, `uamiPrincipalId`, `storageAccount`, `wipeQueueName`, `ledgerContainerName`.
+Output utili: `webAppName`, `webAppHostname`, `procAppName`, `procAppHostname`, `uamiWorkerPrincipalId`, `uamiWebPrincipalId`, `storageAccount`, `wipeQueueName`, `ledgerContainerName`.
 
-### 3. Concedi i permessi Graph alla Managed Identity
+### 3. Concedi i permessi Graph alla Managed Identity (solo worker)
+
+Solo l'UAMI del worker (`uamiWorkerPrincipalId` dall'output) riceve i consent
+Graph. La UAMI web (`uamiWebPrincipalId`) **non** deve essere consentita.
 
 ```pwsh
-$principalId = '<uamiPrincipalId dall''output>'
+$principalId = '<uamiWorkerPrincipalId dall''output>'
 $graphSpId   = az ad sp list --filter "appId eq '00000003-0000-0000-c000-000000000000'" --query "[0].id" -o tsv
 
 foreach ($r in @(
@@ -130,14 +143,24 @@ foreach ($r in @(
 }
 ```
 
-### 4. Pubblica il codice
+### 4. Pubblica il codice su entrambe le Function App
+
+Lo stesso pacchetto va su entrambe; i due `AzureWebJobs.*.Disabled` (settati
+dal Bicep) garantiscono che ciascuna app esegua solo la function di sua
+competenza.
 
 ```pwsh
 cd src
 dotnet publish -c Release -o ./publish
 Compress-Archive -Path ./publish/* -DestinationPath ./publish.zip -Force
 az functionapp deployment source config-zip `
-  -g rg-intwipe-dev -n <functionAppName> --src ./publish.zip
+  -g rg-intwipe-dev -n <webAppName>  --src ./publish.zip
+az functionapp deployment source config-zip `
+  -g rg-intwipe-dev -n <procAppName> --src ./publish.zip
+
+# Verifica post-deploy che il selector sia attivo su entrambe le app
+az functionapp config appsettings list -g rg-intwipe-dev -n <webAppName>  --query "[?name=='AzureWebJobs.WipeProcessor.Disabled'].value" -o tsv
+az functionapp config appsettings list -g rg-intwipe-dev -n <procAppName> --query "[?name=='AzureWebJobs.WipeRequest.Disabled'].value"   -o tsv
 ```
 
 ### 5. Aggiungi device al gruppo allow-list

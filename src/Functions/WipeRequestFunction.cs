@@ -36,6 +36,18 @@ public sealed class WipeRequestFunction
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "wipe")] HttpRequest req,
         CancellationToken ct)
     {
+        // 0) App role guard: this function may run ONLY on the public web app.
+        //    The Functions runtime "Disabled" setting does not reliably block HTTP
+        //    triggers on dotnet-isolated, so fail closed here to keep the worker
+        //    app's HTTP surface inert even if reached.
+        if (!AppRoleGuard.IsAllowed(AppRoleGuard.Web))
+        {
+            _log.LogWarning("AUDIT denied reason=app-role-mismatch expected={Expected} actual={Actual}",
+                AppRoleGuard.Web, AppRoleGuard.CurrentRole);
+            return new ObjectResult(new { status = "gone", message = "endpoint not available on this host" })
+                { StatusCode = (int)HttpStatusCode.Gone };
+        }
+
         var correlationId = Guid.NewGuid().ToString("N");
         using var scope = _log.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId });
 
@@ -133,7 +145,6 @@ public sealed class WipeRequestFunction
         };
 
         var payload = JsonSerializer.Serialize(msg);
-        await _queue.CreateIfNotExistsAsync(cancellationToken: ct);
         await _queue.SendMessageAsync(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payload)), ct);
 
         _log.LogInformation(

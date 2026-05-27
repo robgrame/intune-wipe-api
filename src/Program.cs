@@ -43,16 +43,17 @@ var host = new HostBuilder()
             QueueClient client;
             if (string.IsNullOrWhiteSpace(account))
             {
-                // Local dev fallback
+                // Local dev fallback (Azurite): create on demand
                 client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
+                client.CreateIfNotExists();
             }
             else
             {
+                // Azure: queue is provisioned by Bicep; identity has Send-only role
                 client = new QueueClient(
                     new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
                     cred, options);
             }
-            client.CreateIfNotExists();
             return client;
         });
 
@@ -64,15 +65,17 @@ var host = new HostBuilder()
             BlobContainerClient client;
             if (string.IsNullOrWhiteSpace(account))
             {
+                // Local dev fallback (Azurite): create on demand
                 client = new BlobContainerClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", container);
+                client.CreateIfNotExists();
             }
             else
             {
+                // Azure: container is provisioned by Bicep
                 client = new BlobContainerClient(
                     new Uri($"https://{account}.blob.core.windows.net/{container}"),
                     cred);
             }
-            client.CreateIfNotExists();
             return client;
         });
 

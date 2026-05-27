@@ -41,7 +41,7 @@ public sealed class IdempotencyService
     public async Task<(State currentState, Entry entry)> ReserveAsync(
         string intuneDeviceId, string correlationId, CancellationToken ct)
     {
-        await _container.CreateIfNotExistsAsync(cancellationToken: ct);
+        // Container is provisioned by Bicep (Azure) or by Program.cs registration (local dev).
         var blob = _container.GetBlobClient(BlobName(intuneDeviceId));
 
         var entry = new Entry
