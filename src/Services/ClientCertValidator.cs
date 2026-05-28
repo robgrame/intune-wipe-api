@@ -323,9 +323,25 @@ public sealed class ClientCertValidator
 
     private static string? FirstSanValue(X509Certificate2 cert, X509NameType nameType)
     {
-        // STRICT: the SAN value itself must parse as a bare GUID. Substring extraction would
-        // accept SAN entries like "<victimGuid>.attacker.example" and silently bind to the victim.
-        return ExactGuid(cert.GetNameInfo(nameType, false));
+        // STRICT: the SAN value itself must parse as a bare GUID (or the RFC 4122 urn:uuid:
+        // form when the SAN is a URI). Substring extraction would accept SAN entries like
+        // "<victimGuid>.attacker.example" and silently bind to the victim.
+        var raw = cert.GetNameInfo(nameType, false);
+        if (nameType == X509NameType.UrlName)
+        {
+            raw = StripUrnUuidPrefix(raw);
+        }
+        return ExactGuid(raw);
+    }
+
+    private static string? StripUrnUuidPrefix(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return raw;
+        var trimmed = raw.Trim();
+        const string prefix = "urn:uuid:";
+        return trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? trimmed.Substring(prefix.Length)
+            : trimmed;
     }
 
     private static string? ExactGuid(string? raw)
