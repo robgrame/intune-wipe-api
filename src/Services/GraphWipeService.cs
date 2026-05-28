@@ -14,6 +14,8 @@ public sealed class GraphWipeService
     private readonly bool _keepEnrollment;
     private readonly bool _keepUserData;
     private readonly string _allowedGroupId;
+    private readonly int _syncFallbackDelaySeconds;
+    private readonly int _rebootFallbackDelaySeconds;
 
     public GraphWipeService(GraphServiceClient graph, IConfiguration cfg, ILogger<GraphWipeService> log)
     {
@@ -23,7 +25,15 @@ public sealed class GraphWipeService
         _keepUserData = bool.TryParse(cfg["Wipe:KeepUserData"], out var ku) && ku;
         _allowedGroupId = cfg["Wipe:AllowedGroupId"]
             ?? throw new InvalidOperationException("Wipe:AllowedGroupId must be configured");
+
+        // Post-wipe fallback nudges. Default: syncDevice 60s after wipe, then
+        // rebootNow 60s after the sync. Set either to 0 to disable that step.
+        _syncFallbackDelaySeconds   = int.TryParse(cfg["Wipe:SyncFallbackDelaySeconds"],   out var s) ? Math.Max(0, s) : 60;
+        _rebootFallbackDelaySeconds = int.TryParse(cfg["Wipe:RebootFallbackDelaySeconds"], out var r) ? Math.Max(0, r) : 60;
     }
+
+    public int SyncFallbackDelaySeconds   => _syncFallbackDelaySeconds;
+    public int RebootFallbackDelaySeconds => _rebootFallbackDelaySeconds;
 
     /// <summary>
     /// Resolves the directory object id of an Entra device by its deviceId (azureADDeviceId).
@@ -101,6 +111,28 @@ public sealed class GraphWipeService
         };
         await _graph.DeviceManagement.ManagedDevices[managedDeviceId].Wipe.PostAsync(body, cancellationToken: ct);
         _log.LogInformation("Wipe issued for managedDevice {Id}", managedDeviceId);
+    }
+
+    /// <summary>
+    /// Forces an Intune MDM check-in on the device so it pulls pending actions
+    /// (including a freshly-issued wipe). Best-effort: caller should treat any
+    /// exception as non-fatal.
+    /// </summary>
+    public async Task SyncDeviceAsync(string managedDeviceId, CancellationToken ct)
+    {
+        await _graph.DeviceManagement.ManagedDevices[managedDeviceId].SyncDevice.PostAsync(cancellationToken: ct);
+        _log.LogInformation("syncDevice issued for managedDevice {Id}", managedDeviceId);
+    }
+
+    /// <summary>
+    /// Sends a remote rebootNow. Combined with a prior syncDevice, this is the
+    /// last-ditch nudge to make a stuck IME session apply the queued wipe.
+    /// Best-effort: caller should treat any exception as non-fatal.
+    /// </summary>
+    public async Task RebootAsync(string managedDeviceId, CancellationToken ct)
+    {
+        await _graph.DeviceManagement.ManagedDevices[managedDeviceId].RebootNow.PostAsync(cancellationToken: ct);
+        _log.LogInformation("rebootNow issued for managedDevice {Id}", managedDeviceId);
     }
 
     /// <summary>

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "11347654384235645859"
+      "templateHash": "12380014016957185489"
     }
   },
   "parameters": {
@@ -30,14 +30,28 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Comma-separated list of trusted CA certificate thumbprints (root and/or intermediate). At least one must appear in the client certificate chain. Required unless trustedCaCertificatesBase64 is provided."
+        "description": "Comma-separated list of trusted CA certificate thumbprints (root and/or intermediate). At least one must appear in the client certificate chain. Required unless trustedRootCertificatesBase64 (or legacy trustedCaCertificatesBase64) is provided."
+      }
+    },
+    "trustedRootCertificatesBase64": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Base64-encoded DER ROOT CA certificates (self-signed). Loaded into CustomTrustStore as trust anchors. Separate multiple certificates with pipe (|), comma (,) or semicolon (;)."
+      }
+    },
+    "trustedIntermediateCertificatesBase64": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Base64-encoded DER INTERMEDIATE CA certificates. Loaded into ExtraStore only (path-building hints, NOT trust anchors). Separate multiple certificates with pipe (|), comma (,) or semicolon (;)."
       }
     },
     "trustedCaCertificatesBase64": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Comma-separated list of base64-encoded DER CA certificates loaded into a custom trust store (no dependency on the machine trust store). Optional alternative or complement to trustedCaThumbprints."
+        "description": "DEPRECATED. Use trustedRootCertificatesBase64 + trustedIntermediateCertificatesBase64. Legacy bag of CA certs (auto-classified by self-signed flag at startup). Kept for backward compatibility."
       }
     },
     "allowedLeafThumbprints": {
@@ -87,15 +101,25 @@
     },
     "deviceIdBindingClaim": {
       "type": "string",
-      "defaultValue": "SubjectCN",
+      "defaultValue": "Auto",
       "allowedValues": [
+        "Auto",
         "SubjectCN",
         "SanDns",
         "SanUri",
+        "Thumbprint",
+        "SanDnsLookup",
         "Disabled"
       ],
       "metadata": {
-        "description": "Which claim from the client certificate identifies the device. SubjectCN expects CN=<entraDeviceId GUID>. Disabled turns off cert<->device binding (NOT recommended)."
+        "description": "Which claim from the client certificate identifies the device. Auto (recommended for multi-PKI) tries in order: ThumbprintToDeviceMap (operator intent wins) -> SanUri -> SanDns -> SubjectCN -> SanDnsLookup (Graph directory resolution by displayName, for legacy AD CS certs). All claim strategies are STRICT: the SAN value or CN must EQUAL a GUID. SanDnsLookup resolves the cert SAN DNS via Microsoft Graph and requires the WEB UAMI to have Device.Read.All granted. Thumbprint uses ONLY the operator map. Disabled turns off cert<->device binding (NOT recommended)."
+      }
+    },
+    "clientCertThumbprintToDeviceMap": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Operator-maintained mapping cert-thumbprint -> EntraDeviceId for the Thumbprint and Auto binding modes. Format: \"THUMB1=guid1|THUMB2=guid2\". Duplicate thumbprints mapping to different GUIDs are rejected fail-closed at startup. Use this when the client certificate Subject/SAN does not embed the device id (third-party PKI templates)."
       }
     },
     "maxTimestampSkewSeconds": {
@@ -135,6 +159,13 @@
       "metadata": {
         "description": "Blob container name used as the idempotency ledger for wipe operations"
       }
+    },
+    "auditTableName": {
+      "type": "string",
+      "defaultValue": "auditevents",
+      "metadata": {
+        "description": "Table name used for long-term audit event persistence (dual-write alongside App Insights)"
+      }
     }
   },
   "variables": {
@@ -153,6 +184,7 @@
     "planProcName": "[toLower(format('{0}-plan-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
     "blobDataOwner": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
     "queueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
+    "tableDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
     "queueDataMessageSender": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')]"
   },
   "resources": [
@@ -249,6 +281,22 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stProcName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stProcName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('auditTableName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', variables('stProcName'), 'default')]"
       ]
     },
     {
@@ -366,8 +414,24 @@
               "value": "[parameters('wipeQueueName')]"
             },
             {
+              "name": "Audit__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Audit__TableName",
+              "value": "[parameters('auditTableName')]"
+            },
+            {
               "name": "ClientCert__TrustedCaThumbprints",
               "value": "[parameters('trustedCaThumbprints')]"
+            },
+            {
+              "name": "ClientCert__TrustedRootCertificates",
+              "value": "[parameters('trustedRootCertificatesBase64')]"
+            },
+            {
+              "name": "ClientCert__TrustedIntermediateCertificates",
+              "value": "[parameters('trustedIntermediateCertificatesBase64')]"
             },
             {
               "name": "ClientCert__TrustedCaCertificates",
@@ -399,11 +463,15 @@
             },
             {
               "name": "ClientCert__TrustForwardedHeader",
-              "value": "false"
+              "value": "true"
             },
             {
               "name": "ClientCert__DeviceIdBindingClaim",
               "value": "[parameters('deviceIdBindingClaim')]"
+            },
+            {
+              "name": "ClientCert__ThumbprintToDeviceMap",
+              "value": "[parameters('clientCertThumbprintToDeviceMap')]"
             },
             {
               "name": "Replay__MaxTimestampSkewSeconds",
@@ -500,6 +568,14 @@
               "value": "[variables('stProcName')]"
             },
             {
+              "name": "Audit__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Audit__TableName",
+              "value": "[parameters('auditTableName')]"
+            },
+            {
               "name": "Graph__TenantId",
               "value": "[parameters('graphTenantId')]"
             },
@@ -562,10 +638,55 @@
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'table')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'blob')]",
       "properties": {
         "roleDefinitionId": "[variables('blobDataOwner')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'queue')]",
+      "properties": {
+        "roleDefinitionId": "[variables('queueDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'table')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
         "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
         "principalType": "ServicePrincipal"
       },
@@ -587,6 +708,21 @@
       "dependsOn": [
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeQueueName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'table-audit')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
       ]
     }
   ],

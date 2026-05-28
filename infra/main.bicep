@@ -65,6 +65,9 @@ param wipeQueueName string = 'wipe-requests'
 @description('Blob container name used as the idempotency ledger for wipe operations')
 param ledgerContainerName string = 'wipe-ledger'
 
+@description('Table name used for long-term audit event persistence (dual-write alongside App Insights)')
+param auditTableName string = 'auditevents'
+
 var suffix = uniqueString(resourceGroup().id)
 var stWebRaw = toLower('${namePrefix}stw${suffix}')
 var stWebName = length(stWebRaw) > 24 ? substring(stWebRaw, 0, 24) : stWebRaw
@@ -152,6 +155,18 @@ resource ledgerContainer 'Microsoft.Storage/storageAccounts/blobServices/contain
   properties: { publicAccess: 'None' }
 }
 
+// Pre-provisioned table for long-term audit event persistence. Worker
+// (AuditTableSink) auto-creates on miss in dev, but explicit declaration
+// here keeps RBAC + lifecycle policies attachable from IaC.
+resource tableSvcProc 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+  parent: storageProc
+  name: 'default'
+}
+resource auditTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableSvcProc
+  name: auditTableName
+}
+
 resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiName
   location: location
@@ -229,6 +244,9 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         // storage).
         { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
+        // Audit persistence (dual-write to Table Storage alongside App Insights).
+        { name: 'Audit__StorageAccount', value: storageProc.name }
+        { name: 'Audit__TableName', value: auditTableName }
         // Client cert / replay protection (HTTP surface).
         { name: 'ClientCert__TrustedCaThumbprints',           value: trustedCaThumbprints }
         { name: 'ClientCert__TrustedRootCertificates',        value: trustedRootCertificatesBase64 }
@@ -297,6 +315,9 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
         { name: 'Idempotency__BlobContainer', value: ledgerContainerName }
         { name: 'Idempotency__StorageAccount', value: storageProc.name }
+        // Audit persistence (dual-write to Table Storage alongside App Insights).
+        { name: 'Audit__StorageAccount', value: storageProc.name }
+        { name: 'Audit__TableName', value: auditTableName }
         // Microsoft Graph wipe call.
         { name: 'Graph__TenantId', value: graphTenantId }
         { name: 'Graph__ManagedIdentityClientId', value: uami.properties.clientId }
@@ -366,6 +387,15 @@ resource raWebQueueSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(wipeQueue.id, uamiWeb.id, 'queue-send')
   scope: wipeQueue
   properties: { roleDefinitionId: queueDataMessageSender, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// Web identity needs Table Data Contributor on the worker's storage account
+// so AuditTableSink can write HTTP-path audit events (AcceptedQueued, denials,
+// replay, cert validation failures) to the shared audit table.
+resource raWebTableOnProc 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageProc.id, uamiWeb.id, 'table-audit')
+  scope: storageProc
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
 }
 
 output webAppName string = funcWeb.name

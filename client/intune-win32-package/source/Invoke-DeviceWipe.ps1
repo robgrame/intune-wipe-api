@@ -69,10 +69,10 @@ function Show-WipeConfirmation {
 
 Write-Host 'Collecting device identity...' -ForegroundColor Cyan
 if ($DryRun) {
-    $deviceName   = 'LAPTOP-DEMO-01'
-    $entraId      = '8f3b6c2e-7a91-4d2f-9b1e-5c0a4d6e8f12'
+    $deviceName  = 'LAPTOP-DEMO-01'
+    $entraId     = '8f3b6c2e-7a91-4d2f-9b1e-5c0a4d6e8f12'
     $enrollmentId = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d'
-    $intuneId     = 'a8fa102a-1e88-4e71-8df0-37a09d570a72'
+    $intuneId    = 'a8fa102a-1e88-4e71-8df0-37a09d570a72'
 } else {
     $deviceName   = $env:COMPUTERNAME
     $entraId      = Get-EntraDeviceId

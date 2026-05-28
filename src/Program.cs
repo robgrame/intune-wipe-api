@@ -1,4 +1,5 @@
 using Azure.Core;
+using Azure.Data.Tables;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Queues;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 
 var host = new HostBuilder()
@@ -106,6 +108,41 @@ var host = new HostBuilder()
         });
 
         services.AddSingleton<IdempotencyService>();
+
+        // Audit persistence sink (Table Storage). Best-effort, dual-write
+        // alongside App Insights. Disabled gracefully if no storage account
+        // is configured (provider returns a sink with no underlying client → no-ops).
+        services.AddSingleton(sp =>
+        {
+            var cred = sp.GetRequiredService<TokenCredential>();
+            var account = cfg["Audit:StorageAccount"]
+                ?? cfg["Idempotency:StorageAccount"]
+                ?? cfg["AzureWebJobsStorage__accountName"];
+            var tableName = cfg["Audit:TableName"] ?? "auditevents";
+            try
+            {
+                TableClient client;
+                if (string.IsNullOrWhiteSpace(account))
+                {
+                    var conn = cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true";
+                    client = new TableClient(conn, tableName);
+                }
+                else
+                {
+                    client = new TableClient(
+                        new Uri($"https://{account}.table.core.windows.net"),
+                        tableName,
+                        cred);
+                }
+                client.CreateIfNotExists();
+                return new AuditTableSink(client, sp.GetRequiredService<ILogger<AuditTableSink>>());
+            }
+            catch
+            {
+                // Fall back to disabled sink — never fail host startup over audit persistence.
+                return new AuditTableSink(null, sp.GetRequiredService<ILogger<AuditTableSink>>());
+            }
+        });
 
         services.AddSingleton(sp =>
         {

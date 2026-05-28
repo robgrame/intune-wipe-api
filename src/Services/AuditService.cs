@@ -32,10 +32,12 @@ public sealed class AuditService
 
     private readonly TelemetryClient _telemetry;
     private readonly ILogger<AuditService> _log;
+    private readonly AuditTableSink _tableSink;
 
-    public AuditService(TelemetryClient telemetry, ILogger<AuditService> log)
+    public AuditService(TelemetryClient telemetry, AuditTableSink tableSink, ILogger<AuditService> log)
     {
         _telemetry = telemetry;
+        _tableSink = tableSink;
         _log = log;
     }
 
@@ -50,6 +52,7 @@ public sealed class AuditService
         props[AuditMarkerKey] = AuditMarkerValue;
 
         _telemetry.TrackEvent(eventName, props);
+        _tableSink.TrackEvent(eventName, props, logLevel);
         WriteLog(logLevel, eventName, props, exception: null);
     }
 
@@ -75,6 +78,7 @@ public sealed class AuditService
 
         _telemetry.TrackEvent(eventName, props);
         _telemetry.TrackException(exception, props);
+        _tableSink.TrackEvent(eventName, props, logLevel);
         WriteLog(logLevel, eventName, props, exception);
     }
 

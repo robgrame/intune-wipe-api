@@ -42,6 +42,14 @@ public static class AuditEvents
     public const string WipeFailedPermanent = "wipe.graph.failed-permanent";
     public const string WipeTransientError  = "wipe.graph.transient-error";
 
+    // Post-wipe fallback nudges (best-effort: syncDevice + rebootNow to push the
+    // managed-device to pick up the pending wipe even if it didn't kick in
+    // immediately). Failures here do NOT reverse the successful wipe.
+    public const string SyncFallbackIssued   = "wipe.graph.sync-fallback.issued";
+    public const string SyncFallbackFailed   = "wipe.graph.sync-fallback.failed";
+    public const string RebootFallbackIssued = "wipe.graph.reboot-fallback.issued";
+    public const string RebootFallbackFailed = "wipe.graph.reboot-fallback.failed";
+
     // Shared property keys (use these consistently so KQL is uniform)
     public static class Prop
     {
