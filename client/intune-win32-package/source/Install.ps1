@@ -66,6 +66,7 @@ try {
         'Invoke-DeviceWipe.ps1',
         'Invoke-WipeFromTask.ps1',
         'WipeConfirmationDialog.ps1',
+        'WipeResultDialogs.ps1',
         'Launch-Wipe.ps1',
         'version.txt'
     )
@@ -214,6 +215,16 @@ try {
     # --- Data dir for last-result.json + per-user logs --------------------
     $DataDir = Join-Path $env:ProgramData 'IntuneWipeClient'
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+
+    # --- Event Log source (pre-create so we don't pay first-write latency) ---
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists('IntuneWipeClient')) {
+            [System.Diagnostics.EventLog]::CreateEventSource('IntuneWipeClient', 'Application')
+            Write-Host "  Registered Event Log source: IntuneWipeClient (Application)"
+        }
+    } catch {
+        Write-Host ("  WARN: could not pre-create Event Log source: {0}" -f $_.Exception.Message)
+    }
 
     Write-Host "Install completed successfully."
     exit 0

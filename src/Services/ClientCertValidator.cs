@@ -13,7 +13,8 @@ public sealed class ClientCertValidator
 
     private readonly HashSet<string> _trustedCaThumbprints;
     private readonly HashSet<string> _allowedLeafThumbprints;
-    private readonly List<X509Certificate2> _customTrustStore;
+    private readonly List<X509Certificate2> _rootStore;          // anchors: CustomTrustStore
+    private readonly List<X509Certificate2> _intermediateStore;  // path hints: ExtraStore only
     private readonly bool _checkRevocation;
     private readonly X509RevocationMode _revocationMode;
     private readonly X509RevocationFlag _revocationFlag;
@@ -38,18 +39,39 @@ public sealed class ClientCertValidator
             .Where(t => t.Length > 0)
             .ToHashSet();
 
-        _customTrustStore = new List<X509Certificate2>();
-        foreach (var b64 in ParseCsv(cfg["ClientCert:TrustedCaCertificates"]))
+        _rootStore = new List<X509Certificate2>();
+        _intermediateStore = new List<X509Certificate2>();
+
+        // Preferred: explicit root vs intermediate split (only roots become trust anchors).
+        LoadCerts(cfg["ClientCert:TrustedRootCertificates"], _rootStore, "root");
+        LoadCerts(cfg["ClientCert:TrustedIntermediateCertificates"], _intermediateStore, "intermediate");
+
+        // Backward compatibility: legacy TrustedCaCertificates entries are auto-classified by
+        // inspecting Subject==Issuer (self-signed => root, otherwise => intermediate). This
+        // preserves the previous "everything is an anchor" behaviour for self-signed roots
+        // while preventing intermediates from being silently elevated to trust anchors.
+        var legacyRaw = cfg["ClientCert:TrustedCaCertificates"];
+        if (!string.IsNullOrWhiteSpace(legacyRaw))
         {
-            try
+            _log.LogWarning(
+                "ClientCert:TrustedCaCertificates is deprecated. " +
+                "Use TrustedRootCertificates (anchors) and TrustedIntermediateCertificates (path hints) instead.");
+
+            foreach (var b64 in ParseCsv(legacyRaw))
             {
-                var bytes = Convert.FromBase64String(StripPem(b64));
-                var ca = X509CertificateLoader.LoadCertificate(bytes);
-                _customTrustStore.Add(ca);
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "Failed to load configured trusted CA certificate (skipped)");
+                var ca = TryLoadCert(b64);
+                if (ca is null) continue;
+                var isSelfSigned = string.Equals(ca.Subject, ca.Issuer, StringComparison.OrdinalIgnoreCase);
+                if (isSelfSigned)
+                {
+                    _rootStore.Add(ca);
+                    _log.LogInformation("Legacy CA classified as ROOT (self-signed): {Subject}", ca.Subject);
+                }
+                else
+                {
+                    _intermediateStore.Add(ca);
+                    _log.LogInformation("Legacy CA classified as INTERMEDIATE: {Subject}", ca.Subject);
+                }
             }
         }
 
@@ -69,14 +91,48 @@ public sealed class ClientCertValidator
             : DeviceIdBinding.SubjectCN;
     }
 
+    private void LoadCerts(string? csv, List<X509Certificate2> target, string label)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return;
+        foreach (var b64 in ParseCsv(csv))
+        {
+            var ca = TryLoadCert(b64);
+            if (ca is null) continue;
+            if (string.Equals(label, "root", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(ca.Subject, ca.Issuer, StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogWarning(
+                    "Certificate in TrustedRootCertificates is NOT self-signed (Subject='{Subject}', Issuer='{Issuer}'). " +
+                    "It will be used as a trust anchor anyway, but consider moving it to TrustedIntermediateCertificates.",
+                    ca.Subject, ca.Issuer);
+            }
+            target.Add(ca);
+            _log.LogInformation("Loaded {Label} CA: {Subject} (thumb={Thumb})", label, ca.Subject, ca.Thumbprint);
+        }
+    }
+
+    private X509Certificate2? TryLoadCert(string b64)
+    {
+        try
+        {
+            var bytes = Convert.FromBase64String(StripPem(b64));
+            return X509CertificateLoader.LoadCertificate(bytes);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to load configured trusted CA certificate (skipped)");
+            return null;
+        }
+    }
+
     /// <summary>
     /// Validates the client certificate. Returns (ok, cert, reason).
     /// </summary>
     public (bool Ok, X509Certificate2? Cert, string? Reason) Validate(HttpContext ctx)
     {
-        if (_trustedCaThumbprints.Count == 0 && _customTrustStore.Count == 0)
+        if (_trustedCaThumbprints.Count == 0 && _rootStore.Count == 0)
         {
-            _log.LogError("ClientCertValidator misconfigured: no TrustedCaThumbprints and no TrustedCaCertificates. Failing closed.");
+            _log.LogError("ClientCertValidator misconfigured: no TrustedCaThumbprints, no TrustedRootCertificates, and no legacy TrustedCaCertificates. Failing closed.");
             return (false, null, "client certificate trust anchor not configured");
         }
 
@@ -123,11 +179,21 @@ public sealed class ClientCertValidator
         chain.ChainPolicy.VerificationTime = now;
         chain.ChainPolicy.UrlRetrievalTimeout = TimeSpan.FromSeconds(15);
 
-        if (_customTrustStore.Count > 0)
+        if (_rootStore.Count > 0)
         {
+            // Only ROOT certs become trust anchors. Intermediates go only to ExtraStore
+            // so the chain builder can discover them, but they cannot be used as anchors.
             chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-            chain.ChainPolicy.CustomTrustStore.AddRange(_customTrustStore.ToArray());
-            chain.ChainPolicy.ExtraStore.AddRange(_customTrustStore.ToArray());
+            chain.ChainPolicy.CustomTrustStore.AddRange(_rootStore.ToArray());
+            chain.ChainPolicy.ExtraStore.AddRange(_rootStore.ToArray());
+            if (_intermediateStore.Count > 0)
+                chain.ChainPolicy.ExtraStore.AddRange(_intermediateStore.ToArray());
+        }
+        else if (_intermediateStore.Count > 0)
+        {
+            // No custom roots configured: fall back to the machine trust store (System trust)
+            // and just hint the chain builder with the known intermediates.
+            chain.ChainPolicy.ExtraStore.AddRange(_intermediateStore.ToArray());
         }
 
         var built = chain.Build(cert);

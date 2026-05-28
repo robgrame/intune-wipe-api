@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 $ProgramFiles64 = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $InstallDir = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $DialogPath = Join-Path $InstallDir       'WipeConfirmationDialog.ps1'
+$ResultUiPath = Join-Path $InstallDir     'WipeResultDialogs.ps1'
 $DataDir    = Join-Path $env:ProgramData  'IntuneWipeClient'
 $ResultPath = Join-Path $DataDir          'last-result.json'
 $TaskFull   = '\IntuneWipeClient\InvokeWipe'
@@ -72,9 +73,15 @@ try {
     if (-not (Test-Path $DialogPath)) {
         throw "Dialog script not found at '$DialogPath'. Reinstall the client."
     }
+    if (-not (Test-Path $ResultUiPath)) {
+        throw "Result dialog script not found at '$ResultUiPath'. Reinstall the client."
+    }
 
-    # Load confirmation dialog builder (defines Show-WipeConfirmation).
+    # Load confirmation dialog builder (defines Show-WipeConfirmation) and
+    # the rich result dialogs (Show-WipeSuccessDialog, Show-WipeErrorDialog,
+    # Show-WipeUnknownDialog).
     . $DialogPath
+    . $ResultUiPath
 
     $deviceName = $env:COMPUTERNAME
     $entraId    = Get-EntraDeviceIdSafe
@@ -114,36 +121,41 @@ try {
     }
 
     if ($result -and $result.status -eq 'ok') {
-        $corr = if ($result.correlationId) { $result.correlationId } else { '(n/d)' }
-        Show-Message -Title 'Reset richiesto' -Icon Information -Text (
-            "Richiesta di reset accettata.`r`n`r`n" +
-            "Correlation Id: $corr`r`n`r`n" +
-            "Il dispositivo verra' reimpostato a breve e restera' inutilizzabile per circa 90 minuti."
-        )
+        $corr = if ($result.correlationId) { $result.correlationId } else { '' }
+        Show-WipeSuccessDialog -CorrelationId $corr -DeviceName $deviceName
         exit 0
     }
     elseif ($result -and $result.status -eq 'error') {
-        Show-Message -Title 'Errore' -Icon Error -Text (
-            "Impossibile completare la richiesta di reset.`r`n`r`n" +
-            "Dettagli tecnici:`r`n$($result.message)`r`n`r`n" +
-            "Contatta l'IT helpdesk."
-        )
+        Show-WipeErrorDialog -Result $result
         exit 1
     }
     else {
-        Show-Message -Title 'Stato sconosciuto' -Icon Warning -Text (
-            "L'operazione e' stata avviata ma il risultato non e' ancora disponibile.`r`n`r`n" +
-            "Controlla %ProgramData%\IntuneWipeClient\Logs per i dettagli."
-        )
+        Show-WipeUnknownDialog
         exit 2
     }
 }
 catch {
     Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
     try {
-        Show-Message -Title 'Errore' -Icon Error -Text (
-            "Errore nell'avvio della richiesta:`r`n`r`n$($_.Exception.Message)"
-        )
+        # Use the rich error dialog if it's already loaded; otherwise fall
+        # back to a plain MessageBox so the user is never left without UI.
+        if (Get-Command Show-WipeErrorDialog -ErrorAction SilentlyContinue) {
+            $fallback = [pscustomobject]@{
+                status        = 'error'
+                kind          = 'launcher'
+                message       = $_.Exception.Message
+                clientMessage = $_.Exception.Message
+                ts            = (Get-Date).ToUniversalTime().ToString('o')
+            }
+            Show-WipeErrorDialog -Result $fallback -Title 'Errore'
+        } else {
+            Add-Type -AssemblyName System.Windows.Forms | Out-Null
+            [System.Windows.Forms.MessageBox]::Show(
+                "Errore nell'avvio della richiesta:`r`n`r`n$($_.Exception.Message)",
+                'Errore',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
     } catch { }
     exit 1
 }

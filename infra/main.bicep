@@ -9,10 +9,18 @@ param location string = resourceGroup().location
 @description('Tenant ID where Graph calls are made')
 param graphTenantId string = subscription().tenantId
 
-@description('Comma-separated list of trusted CA certificate thumbprints (root and/or intermediate). At least one must appear in the client certificate chain. Required unless trustedCaCertificatesBase64 is provided.')
+@description('Comma-separated list of trusted CA certificate thumbprints (root and/or intermediate). At least one must appear in the client certificate chain. Required unless trustedRootCertificatesBase64 (or legacy trustedCaCertificatesBase64) is provided.')
 param trustedCaThumbprints string = ''
 
-@description('Comma-separated list of base64-encoded DER CA certificates loaded into a custom trust store (no dependency on the machine trust store). Optional alternative or complement to trustedCaThumbprints.')
+@description('Base64-encoded DER ROOT CA certificates (self-signed). Loaded into CustomTrustStore as trust anchors. Separate multiple certificates with pipe (|), comma (,) or semicolon (;).')
+@secure()
+param trustedRootCertificatesBase64 string = ''
+
+@description('Base64-encoded DER INTERMEDIATE CA certificates. Loaded into ExtraStore only (path-building hints, NOT trust anchors). Separate multiple certificates with pipe (|), comma (,) or semicolon (;).')
+@secure()
+param trustedIntermediateCertificatesBase64 string = ''
+
+@description('DEPRECATED. Use trustedRootCertificatesBase64 + trustedIntermediateCertificatesBase64. Legacy bag of CA certs (auto-classified by self-signed flag at startup). Kept for backward compatibility.')
 @secure()
 param trustedCaCertificatesBase64 string = ''
 
@@ -218,15 +226,24 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
         // Client cert / replay protection (HTTP surface).
-        { name: 'ClientCert__TrustedCaThumbprints',    value: trustedCaThumbprints }
-        { name: 'ClientCert__TrustedCaCertificates',   value: trustedCaCertificatesBase64 }
+        { name: 'ClientCert__TrustedCaThumbprints',           value: trustedCaThumbprints }
+        { name: 'ClientCert__TrustedRootCertificates',        value: trustedRootCertificatesBase64 }
+        { name: 'ClientCert__TrustedIntermediateCertificates', value: trustedIntermediateCertificatesBase64 }
+        { name: 'ClientCert__TrustedCaCertificates',          value: trustedCaCertificatesBase64 }
         { name: 'ClientCert__AllowedLeafThumbprints',  value: allowedLeafThumbprints }
         { name: 'ClientCert__CheckRevocation',         value: string(checkRevocation) }
         { name: 'ClientCert__RevocationMode',          value: revocationMode }
         { name: 'ClientCert__RevocationFlag',          value: revocationFlag }
         { name: 'ClientCert__RequireClientAuthEku',    value: string(requireClientAuthEku) }
         { name: 'ClientCert__RequireClientCert',       value: 'true' }
-        { name: 'ClientCert__TrustForwardedHeader',    value: 'false' }
+        // Must be true on App Service: even with clientCertMode=Required
+        // App Service terminates TLS at the front-end and the validated
+        // client cert is delivered to the app ONLY via the X-ARR-ClientCert
+        // header — HttpContext.Connection.ClientCertificate is empty unless
+        // Microsoft.AspNetCore.Authentication.Certificate forwarding is
+        // wired up. Leaving this 'false' makes every request return
+        // "client certificate missing" even when the client presented one.
+        { name: 'ClientCert__TrustForwardedHeader',    value: 'true' }
         { name: 'ClientCert__DeviceIdBindingClaim',    value: deviceIdBindingClaim }
         { name: 'Replay__MaxTimestampSkewSeconds',     value: string(maxTimestampSkewSeconds) }
       ]
@@ -286,14 +303,23 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-// RBAC: worker identity → full data-plane on its own storage account only
-// (Functions runtime blob lease + queue read/delete for the listener + ledger
-// write). No access to the web app's runtime storage.
+// RBAC: identity-based AzureWebJobsStorage. Each function app's UAMI gets
+// Blob + Queue + Table data-plane on its own runtime storage account
+// (Functions host requires all three for leases, secret repository, timer
+// singleton locks and the scale controller). On top of that, the web
+// identity gets Queue Data Message Sender on the worker's wipe queue
+// (enqueue-only), and the worker identity has full Blob/Queue/Table on its
+// own storage for the queue trigger + ledger.
 var blobDataOwner         = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 var queueDataContributor  = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+var tableDataContributor  = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 // Sender is enqueue-only — does NOT allow read/peek/delete on the queue.
 var queueDataMessageSender = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')
 
+// Worker identity → full data-plane on its own storage account.
+// Functions host (identity-based AzureWebJobsStorage) needs Blob (host lease
+// + secret repository when no Key Vault is configured), Queue (singleton +
+// the WipeProcessor trigger) and Table (timer triggers, scale controller).
 resource raProcBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageProc.id, uami.id, 'blob')
   scope: storageProc
@@ -304,15 +330,32 @@ resource raProcQueue 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: storageProc
   properties: { roleDefinitionId: queueDataContributor, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
 }
+resource raProcTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageProc.id, uami.id, 'table')
+  scope: storageProc
+  properties: { roleDefinitionId: tableDataContributor, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
+}
 
-// RBAC: web identity → Blob Data Owner ONLY on its own runtime storage
-// (Functions host needs it for distributed lease / run-from-package). It has
-// NO permission on the worker's storage account except Queue Data Message
-// Sender scoped narrowly to the single wipe queue resource — enqueue only.
+// Web identity → full data-plane on its OWN runtime storage account
+// (Functions host requires Blob+Queue+Table even when there are no
+// queue/table bindings — host internals use them for leases, secrets,
+// singleton locks and the scale controller). On the *worker's* storage
+// account the web identity only gets Queue Data Message Sender, scoped to
+// the single wipe queue resource (enqueue-only, no read/peek/delete).
 resource raWebBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageWeb.id, uamiWeb.id, 'blob')
   scope: storageWeb
   properties: { roleDefinitionId: blobDataOwner, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raWebQueue 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageWeb.id, uamiWeb.id, 'queue')
+  scope: storageWeb
+  properties: { roleDefinitionId: queueDataContributor, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raWebTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageWeb.id, uamiWeb.id, 'table')
+  scope: storageWeb
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
 }
 resource raWebQueueSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(wipeQueue.id, uamiWeb.id, 'queue-send')

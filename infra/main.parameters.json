@@ -2,19 +2,50 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "namePrefix":                  { "value": "intwipe" },
-    "trustedCaThumbprints":        { "value": "A1BC56C613DB7C92E0E592794658BB2ECEBB4892" },
-    "trustedCaCertificatesBase64": { "value": "MIIEtjCCA56gAwIBAgITGwAAAALSnM8qv5cQnAAAAAAAAjANBgkqhkiG9w0BAQsFADAYMRYwFAYDVQQDEw1NU0xBQlMtUk9PVENBMB4XDTI1MTAxMDE2NTAyMloXDTI5MTAxMDE3MDAyMlowSDEVMBMGCgmSJomT8ixkARkWBUxPQ0FMMRYwFAYKCZImiZPyLGQBGRYGTVNMQUJTMRcwFQYDVQQDEw5NU0xBQlMtU1VCQ0EwMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKGGSIlVJOILjNBAUQix8drHtpjWKCCD0vAy8oVXeCy4l6PwkWpvyxbjDmONHNQVNdjKu0p/rkp+tRizh9UkDNbgOcjveHRBz/a5JQYW3lRP1/r8PrG9W/gW1JMXzy53ewoGfIyOS0xKugdMGjUVsoIZjgzCIehUWysBKLZjRhCGcfRqJrbFlc59dWBeKWpJa+Mwnrx04YvMlzJDcUYDIc2f2xKJL7rDkJzrHRlcDremPkLKlJfS8BswHaJBMmhR7umYE0714HNq9TgNf7tXnuCQdTwz9XA7WLmmuq5jQ9ScaIqbgnYZQPG+/D2rgwp1yIFrXpXXnF1FYupR6apudb0CAwEAAaOCAccwggHDMBAGCSsGAQQBgjcVAQQDAgEAMB0GA1UdDgQWBBRsqBEd1xJ+gV25ELXYy/FYEf+z1jAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBQQCDOXCC1j5E3QqeFf1ti2Zm8eRzCBjgYDVR0fBIGGMIGDMIGAoH6gfIY7aHR0cDovL1NSVlNVQkNBMDEubXNsYWJzLmxvY2FsL0NlcnRFbnJvbGwvTVNMQUJTLVJPT1RDQS5jcmyGPWZpbGU6Ly8vL1NSVlNVQkNBMDEubXNsYWJzLmxvY2FsL0NlcnRFbnJvbGwvTVNMQUJTLVJPT1RDQS5jcmwwgaQGCCsGAQUFBwEBBIGXMIGUMEkGCCsGAQUFBzAChj1maWxlOi8vLy9TUlZTVUJDQTAxLk1TTEFCUy5MT0NBTC9DZXJ0RW5yb2xsL01TTEFCUy1ST09UQ0EuY3J0MEcGCCsGAQUFBzABhjtodHRwOi8vU1JWU1VCQ0EwMS5NU0xBQlMuTE9DQUwvQ2VydEVucm9sbC9NU0xBQlMtUk9PVENBLmNydDANBgkqhkiG9w0BAQsFAAOCAQEAqc0y9ZLWINKD2h3FFlFpy5jUNnJyqx7fZqbODlPWcYeP7QVWjumBo62kvSToiHB5vh/ZWoWzKLwe0dR/hAvTUB5+IKKwZO2ewXPZKjsGiyiFJhBKgElYR6VOYQSbrlIlmeOMLrxBktPGnOiNn5U0fqwCBU+1y5NvIhiYYDfebKe9qnzIWFy77VisSc1Ra0beIZjGgWtm6ilAmesuOpSYe154wK2JUl3AL4xjUzVpxgaIO1FsxapRIhGnx+xi5JRiiA2DzyTsgP3PhzK7z88x1FQRt6ECS65nnYApaXBSPj1pcP1s+Sm4g4caEaY6oLcOZhnxCZgNITW6pYAPhyHchw==" },
-    "allowedLeafThumbprints":      { "value": "" },
-    "checkRevocation":             { "value": false },
-    "revocationMode":              { "value": "Online" },
-    "revocationFlag":              { "value": "ExcludeRoot" },
-    "requireClientAuthEku":        { "value": true },
-    "deviceIdBindingClaim":        { "value": "SubjectCN" },
-    "maxTimestampSkewSeconds":     { "value": 300 },
-    "allowedGroupId":              { "value": "REPLACE_WITH_ENTRA_GROUP_OBJECT_ID" },
-    "keepEnrollmentData":          { "value": false },
-    "keepUserData":                { "value": false }
+    "trustedCaThumbprints": {
+      "value": "A1BC56C613DB7C92E0E592794658BB2ECEBB4892,821340380E0AAF0053F5EFD3A5885B29365807CD"
+    },
+    "trustedRootCertificatesBase64": {
+      "value": "MIIDCzCCAfOgAwIBAgIQE+yGvabzlLhOfA0oV00t7jANBgkqhkiG9w0BAQsFADAYMRYwFAYDVQQDEw1NU0xBQlMtUk9PVENBMB4XDTI1MTAxMDEyMTgxM1oXDTMzMTAxMDEyMjgxMlowGDEWMBQGA1UEAxMNTVNMQUJTLVJPT1RDQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALVaX1+M7uXLDxnBlReWYvuNdhhpWju3+3u03amJDAWp9G6h5S7tDUxSFTeTJXKds2TcjO5W71rl2fcK0i0Wr5eMwzkQncMcAPjh1UqIiMlES9z5k7QMolT+whlCwDikD3UVbynCdDgZC8gd+xzRV/j0uFWxGbWcf5U/BKpIZK5vQJRdML5iro3jT/b3uV8b7nUbpKxUZq9FlWGvdwT9af14Db5gw1WSC27fcjQ4QBH+VtBuHc2zuUgUnbe5LhBcNSiFGuCFQjnd7TfbMw2k8A/KZV+l0XqOcqnUZPSMBdCUdFk9KYGKB6N8yVTIQ2LJsCHEqOPAzZLdrft69fuuVz0CAwEAAaNRME8wCwYDVR0PBAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFBAIM5cILWPkTdCp4V/W2LZmbx5HMBAGCSsGAQQBgjcVAQQDAgEAMA0GCSqGSIb3DQEBCwUAA4IBAQBv2y0iYaoKo1moqwsseNOZhw9y7RIsc3Mh2C+zAU+PXdQWHQnoilKmrhCrxeeth65+IqX1N3A7iR0p4UcPb7viRcUEglKXCadMAbevSDBOTnu4ulWvgFXwX64qgwrXalevSoD4i75jikmUA3XSoI9hAOF9GQKv+eSh14BQwRNGVhrRvuYv1LynXbEb9FRQvcabQqTkSNVqQvTbW+5nIBFZQwNQao/jzsPAfWx/VxdGz5vQXiqon2VLbJDFZFGVRpBmzZ3KOhtPyMiDtsg1hT9UWBEVBIbQK8OTpdTeI35KLB3FAdRvQeXNDuY3nTfXzjx5ErMz3GPoUfiiGHSOsJjx"
+    },
+    "trustedIntermediateCertificatesBase64": {
+      "value": "MIIEtjCCA56gAwIBAgITGwAAAALSnM8qv5cQnAAAAAAAAjANBgkqhkiG9w0BAQsFADAYMRYwFAYDVQQDEw1NU0xBQlMtUk9PVENBMB4XDTI1MTAxMDE2NTAyMloXDTI5MTAxMDE3MDAyMlowSDEVMBMGCgmSJomT8ixkARkWBUxPQ0FMMRYwFAYKCZImiZPyLGQBGRYGTVNMQUJTMRcwFQYDVQQDEw5NU0xBQlMtU1VCQ0EwMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKGGSIlVJOILjNBAUQix8drHtpjWKCCD0vAy8oVXeCy4l6PwkWpvyxbjDmONHNQVNdjKu0p/rkp+tRizh9UkDNbgOcjveHRBz/a5JQYW3lRP1/r8PrG9W/gW1JMXzy53ewoGfIyOS0xKugdMGjUVsoIZjgzCIehUWysBKLZjRhCGcfRqJrbFlc59dWBeKWpJa+Mwnrx04YvMlzJDcUYDIc2f2xKJL7rDkJzrHRlcDremPkLKlJfS8BswHaJBMmhR7umYE0714HNq9TgNf7tXnuCQdTwz9XA7WLmmuq5jQ9ScaIqbgnYZQPG+/D2rgwp1yIFrXpXXnF1FYupR6apudb0CAwEAAaOCAccwggHDMBAGCSsGAQQBgjcVAQQDAgEAMB0GA1UdDgQWBBRsqBEd1xJ+gV25ELXYy/FYEf+z1jAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBQQCDOXCC1j5E3QqeFf1ti2Zm8eRzCBjgYDVR0fBIGGMIGDMIGAoH6gfIY7aHR0cDovL1NSVlNVQkNBMDEubXNsYWJzLmxvY2FsL0NlcnRFbnJvbGwvTVNMQUJTLVJPT1RDQS5jcmyGPWZpbGU6Ly8vL1NSVlNVQkNBMDEubXNsYWJzLmxvY2FsL0NlcnRFbnJvbGwvTVNMQUJTLVJPT1RDQS5jcmwwgaQGCCsGAQUFBwEBBIGXMIGUMEkGCCsGAQUFBzAChj1maWxlOi8vLy9TUlZTVUJDQTAxLk1TTEFCUy5MT0NBTC9DZXJ0RW5yb2xsL01TTEFCUy1ST09UQ0EuY3J0MEcGCCsGAQUFBzABhjtodHRwOi8vU1JWU1VCQ0EwMS5NU0xBQlMuTE9DQUwvQ2VydEVucm9sbC9NU0xBQlMtUk9PVENBLmNydDANBgkqhkiG9w0BAQsFAAOCAQEAqc0y9ZLWINKD2h3FFlFpy5jUNnJyqx7fZqbODlPWcYeP7QVWjumBo62kvSToiHB5vh/ZWoWzKLwe0dR/hAvTUB5+IKKwZO2ewXPZKjsGiyiFJhBKgElYR6VOYQSbrlIlmeOMLrxBktPGnOiNn5U0fqwCBU+1y5NvIhiYYDfebKe9qnzIWFy77VisSc1Ra0beIZjGgWtm6ilAmesuOpSYe154wK2JUl3AL4xjUzVpxgaIO1FsxapRIhGnx+xi5JRiiA2DzyTsgP3PhzK7z88x1FQRt6ECS65nnYApaXBSPj1pcP1s+Sm4g4caEaY6oLcOZhnxCZgNITW6pYAPhyHchw=="
+    },
+    "trustedCaCertificatesBase64": {
+      "value": ""
+    },
+    "allowedLeafThumbprints": {
+      "value": ""
+    },
+    "checkRevocation": {
+      "value": false
+    },
+    "namePrefix": {
+      "value": "intwipe"
+    },
+    "revocationMode": {
+      "value": "Online"
+    },
+    "revocationFlag": {
+      "value": "ExcludeRoot"
+    },
+    "requireClientAuthEku": {
+      "value": true
+    },
+    "deviceIdBindingClaim": {
+      "value": "SubjectCN"
+    },
+    "maxTimestampSkewSeconds": {
+      "value": 300
+    },
+    "allowedGroupId": {
+      "value": "REPLACE_WITH_ENTRA_GROUP_OBJECT_ID"
+    },
+    "keepEnrollmentData": {
+      "value": false
+    },
+    "keepUserData": {
+      "value": false
+    }
   }
 }
-

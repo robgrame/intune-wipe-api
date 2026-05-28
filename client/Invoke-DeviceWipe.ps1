@@ -175,11 +175,56 @@ try {
 }
 catch {
     Write-Host 'Richiesta FALLITA:' -ForegroundColor Red
-    if ($_.Exception.Response) {
-        try {
-            $sr = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())
-            Write-Host $sr.ReadToEnd()
-        } catch { }
+
+    # Build a rich error envelope so the SYSTEM task wrapper can surface
+    # actionable diagnostics to the end user instead of just "401
+    # Unauthorized". We extract HTTP status + the JSON response body
+    # ({status,message,correlationId}) returned by the API's error handler.
+    $errInfo = [ordered]@{
+        kind               = 'http'
+        apiUrl             = $ApiUrl
+        deviceName         = $deviceName
+        entraDeviceId      = $entraId
+        intuneDeviceId     = $intuneId
+        certSubject        = $cert.Subject
+        certThumbprint     = $cert.Thumbprint
+        clientMessage      = $_.Exception.Message
+        httpStatusCode     = $null
+        httpStatusReason   = $null
+        serverStatus       = $null
+        serverMessage      = $null
+        serverCorrelationId = $null
+        serverBodyRaw      = $null
+        timestampUtc       = (Get-Date).ToUniversalTime().ToString('o')
     }
+
+    $resp = $_.Exception.Response
+    if ($resp) {
+        try {
+            $errInfo.httpStatusCode   = [int]$resp.StatusCode
+            $errInfo.httpStatusReason = [string]$resp.StatusDescription
+        } catch { }
+        try {
+            $sr = New-Object IO.StreamReader($resp.GetResponseStream())
+            $bodyText = $sr.ReadToEnd()
+            $errInfo.serverBodyRaw = $bodyText
+            Write-Host $bodyText
+            if ($bodyText) {
+                try {
+                    $parsed = $bodyText | ConvertFrom-Json -ErrorAction Stop
+                    if ($parsed.PSObject.Properties.Name -contains 'status')        { $errInfo.serverStatus        = [string]$parsed.status }
+                    if ($parsed.PSObject.Properties.Name -contains 'message')       { $errInfo.serverMessage       = [string]$parsed.message }
+                    if ($parsed.PSObject.Properties.Name -contains 'correlationId') { $errInfo.serverCorrelationId = [string]$parsed.correlationId }
+                } catch { }
+            }
+        } catch { }
+    } else {
+        $errInfo.kind = 'transport'
+    }
+
+    # Emit a single-line marker the task wrapper can parse out of stdout.
+    $errJson = ($errInfo | ConvertTo-Json -Compress -Depth 4)
+    Write-Host ("ERRJSON:{0}" -f $errJson)
+
     throw
 }

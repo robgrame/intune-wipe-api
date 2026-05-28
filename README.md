@@ -264,15 +264,17 @@ Tutte le impostazioni sono app settings della Function App:
 | Setting | Default | Descrizione |
 |---|---|---|
 | `Queue__WipeQueueName` | `wipe-requests` | Nome coda |
-| `ClientCert__TrustedCaThumbprints` | _(vuoto)_ | CSV thumbprint root/intermediate CA che devono comparire nella chain. **Richiesto** (o `TrustedCaCertificates`) |
-| `ClientCert__TrustedCaCertificates` | _(vuoto)_ | CSV di CA in base64 DER caricate in `CustomTrustStore` (no machine store) |
+| `ClientCert__TrustedCaThumbprints` | _(vuoto)_ | CSV thumbprint root/intermediate CA che devono comparire nella chain. **Richiesto** (o almeno un cert in `TrustedRootCertificates`) |
+| `ClientCert__TrustedRootCertificates` | _(vuoto)_ | Base64 DER delle **ROOT CA** (self-signed). Caricate in `CustomTrustStore` come trust anchors. Separa con `|` `,` o `;`. |
+| `ClientCert__TrustedIntermediateCertificates` | _(vuoto)_ | Base64 DER delle **CA intermedie**. Caricate solo in `ExtraStore` (hint per la costruzione della catena, **non** trust anchor). |
+| `ClientCert__TrustedCaCertificates` | _(vuoto)_ | **Deprecato.** Bag legacy: i cert vengono classificati automaticamente come root o intermediate in base al flag self-signed. Preferire i due setting sopra. |
 | `ClientCert__AllowedLeafThumbprints` | _(vuoto)_ | CSV pin opzionale del thumbprint del certificato leaf |
 | `ClientCert__CheckRevocation` | `false` | Abilita check CRL/OCSP sulla chain |
 | `ClientCert__RevocationMode` | `Online` | `Online`\|`Offline`\|`NoCheck` |
 | `ClientCert__RevocationFlag` | `ExcludeRoot` | `ExcludeRoot`\|`EntireChain`\|`EndCertificateOnly` |
 | `ClientCert__RequireClientAuthEku` | `true` | Richiede EKU Client Authentication (1.3.6.1.5.5.7.3.2) |
 | `ClientCert__RequireClientCert` | `true` | Impone cert client (fail-closed se mancante) |
-| `ClientCert__TrustForwardedHeader` | `false` | Se `true` accetta `X-ARR-ClientCert` (consigliato `false` con `clientCertMode=Required`) |
+| `ClientCert__TrustForwardedHeader` | `true` | **DEVE essere `true` su App Service**: anche con `clientCertMode=Required` il cert viene consegnato all'app via header `X-ARR-ClientCert`, non via `HttpContext.Connection.ClientCertificate`. |
 | `ClientCert__DeviceIdBindingClaim` | `SubjectCN` | `SubjectCN`\|`SanDns`\|`SanUri`\|`Disabled` — claim del cert che identifica l'`entraDeviceId` |
 | `Replay__MaxTimestampSkewSeconds` | `300` | Skew massimo (s) per `X-Request-Timestamp` |
 | `Idempotency__StorageAccount` | _(da bicep)_ | Storage account del ledger blob |
