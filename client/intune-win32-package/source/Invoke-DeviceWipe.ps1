@@ -13,6 +13,10 @@
     Thumbprint of the client certificate in Cert:\LocalMachine\My (or CurrentUser\My).
 .PARAMETER CertificateSubjectLike
     Alternative: subject wildcard, e.g. "*Intune MDM Device CA*".
+.PARAMETER CertificateIssuerLike
+    Optional issuer wildcard, e.g. "*MSLABS-SUBCA01*". When set, only certs
+    issued by a matching CA are considered. Combinable with SubjectLike
+    (AND semantics).
 .PARAMETER FunctionKey
     Function key for the Azure Function (header x-functions-key).
 .PARAMETER Silent
@@ -30,6 +34,7 @@ param(
     [Parameter(Mandatory = $false)] [string] $ApiUrl,
     [string] $CertificateThumbprint,
     [string] $CertificateSubjectLike,
+    [string] $CertificateIssuerLike,
     [Parameter(Mandatory = $false)] [string] $FunctionKey,
     [switch] $Silent,
     [switch] $DryRun
@@ -70,7 +75,7 @@ function Get-IntuneDeviceId {
 }
 
 function Get-ClientCertificate {
-    param([string]$Thumb, [string]$SubjectLike)
+    param([string]$Thumb, [string]$SubjectLike, [string]$IssuerLike)
     # Prefer LocalMachine\My (Intune SCEP/PKCS device certs typically land there in machine context).
     foreach ($s in @('Cert:\LocalMachine\My','Cert:\CurrentUser\My')) {
         $certs = Get-ChildItem $s -ErrorAction SilentlyContinue |
@@ -80,11 +85,19 @@ function Get-ClientCertificate {
             $ekus = $_.EnhancedKeyUsageList
             (-not $ekus) -or ($ekus | Where-Object { $_.ObjectId -eq '1.3.6.1.5.5.7.3.2' })
         }
+        # Issuer filter (AND semantics: if specified, must match).
+        if ($IssuerLike) {
+            $certs = $certs | Where-Object { $_.Issuer -like $IssuerLike }
+        }
         if ($Thumb) {
             $c = $certs | Where-Object Thumbprint -eq $Thumb.ToUpper() | Select-Object -First 1
         } elseif ($SubjectLike) {
-            $c = $certs | Where-Object { $_.Subject -like $SubjectLike -or $_.Issuer -like $SubjectLike } |
+            $c = $certs | Where-Object { $_.Subject -like $SubjectLike } |
                  Sort-Object NotAfter -Descending | Select-Object -First 1
+        } else {
+            # No subject/thumb filter: take the longest-living matching cert
+            # (already filtered by EKU + optional Issuer).
+            $c = $certs | Sort-Object NotAfter -Descending | Select-Object -First 1
         }
         if ($c) { return $c }
     }
@@ -130,7 +143,7 @@ if ($DryRun) {
     return
 }
 
-$cert = Get-ClientCertificate -Thumb $CertificateThumbprint -SubjectLike $CertificateSubjectLike
+$cert = Get-ClientCertificate -Thumb $CertificateThumbprint -SubjectLike $CertificateSubjectLike -IssuerLike $CertificateIssuerLike
 Write-Host ("Using cert: {0} (thumb {1})" -f $cert.Subject, $cert.Thumbprint) -ForegroundColor Cyan
 
 $body = @{
