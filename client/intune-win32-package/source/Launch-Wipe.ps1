@@ -51,11 +51,12 @@ try {
     }
 
     $params = @{
-        ApiUrl                 = $cfg.ApiUrl
-        FunctionKey            = $cfg.FunctionKey
-        CertificateSubjectLike = $cfg.CertificateSubjectLike
+        ApiUrl      = $cfg.ApiUrl
+        FunctionKey = $cfg.FunctionKey
     }
-    if ($cfg.CertificateThumbprint) { $params['CertificateThumbprint'] = $cfg.CertificateThumbprint }
+    if ($cfg.CertificateSubjectLike) { $params['CertificateSubjectLike'] = $cfg.CertificateSubjectLike }
+    if ($cfg.CertificateIssuerLike)  { $params['CertificateIssuerLike']  = $cfg.CertificateIssuerLike  }
+    if ($cfg.CertificateThumbprint)  { $params['CertificateThumbprint']  = $cfg.CertificateThumbprint  }
 
     & $WipeScript @params
     exit $LASTEXITCODE

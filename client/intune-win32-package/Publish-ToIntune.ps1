@@ -32,7 +32,8 @@ param(
     [Parameter(Mandatory = $false)] [string] $AssignToGroupId,
     [Parameter(Mandatory = $false)] [string] $Publisher = 'Contoso IT',
     [Parameter(Mandatory = $false)] [string] $DisplayName = 'Intune Wipe Self-Service Client',
-    [Parameter(Mandatory = $false)] [string] $CertificateSubjectLike = '*MSLABS-SUBCA01*',
+    [Parameter(Mandatory = $false)] [string] $CertificateIssuerLike = '*MSLABS-SUBCA01*',
+    [Parameter(Mandatory = $false)] [string] $CertificateSubjectLike,
     # Well-known Microsoft Intune PowerShell first-party app (has Intune scopes
     # pre-consented in most tenants). Override with your own app reg if you have
     # one bound to DeviceManagementApps.ReadWrite.All.
@@ -144,12 +145,16 @@ $Global:AuthenticationHeader = @{
 Write-Host ("    Token OK (expires {0:HH:mm:ss}Z)" -f $expiresOnUtc) -ForegroundColor Green
 
 # --- Build install / uninstall / detection ---------------------------------
-$installCmd = @(
+$installParts = @(
     'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ".\Install.ps1"'
     "-ApiUrl `"$ApiUrl`""
     "-FunctionKey `"$FunctionKey`""
-    "-CertificateSubjectLike `"$CertificateSubjectLike`""
-) -join ' '
+    "-CertificateIssuerLike `"$CertificateIssuerLike`""
+)
+if ($CertificateSubjectLike) {
+    $installParts += "-CertificateSubjectLike `"$CertificateSubjectLike`""
+}
+$installCmd = $installParts -join ' '
 
 $uninstallCmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ".\Uninstall.ps1"'
 
