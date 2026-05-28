@@ -275,12 +275,13 @@ public sealed class ClientCertValidator
                 return LookupByThumbprint(cert);
 
             case DeviceIdBinding.Auto:
-                // Try every PKI convention in order, falling back to the operator-maintained map.
-                // This is PKI-agnostic: customers don't have to change their cert templates.
-                return FirstSanValue(cert, X509NameType.UrlName)
+                // Operator-maintained mapping wins when populated for this cert (explicit intent),
+                // otherwise try every PKI convention in order. PKI-agnostic: customers don't have
+                // to change their cert templates, and the operator can override on a per-cert basis.
+                return LookupByThumbprint(cert)
+                    ?? FirstSanValue(cert, X509NameType.UrlName)
                     ?? FirstSanValue(cert, X509NameType.DnsName)
-                    ?? ExtractFromSubject(cert)
-                    ?? LookupByThumbprint(cert);
+                    ?? ExtractFromSubject(cert);
 
             default:
                 return null;
