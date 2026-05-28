@@ -19,6 +19,15 @@ $LogFile = Join-Path $LogDir ("Uninstall_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
 Start-Transcript -Path $LogFile -Force | Out-Null
 
 try {
+    # --- Scheduled task -----------------------------------------------------
+    & schtasks.exe /Delete /TN '\IntuneWipeClient\InvokeWipe' /F 2>$null | Out-Null
+    # Also remove the (now-empty) folder.
+    try {
+        $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect()
+        $root = $svc.GetFolder('\')
+        $root.DeleteFolder('IntuneWipeClient', 0)
+    } catch { }
+
     $allUsersStart = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
     $lnkPath = Join-Path $allUsersStart ("{0}.lnk" -f $ShortcutName)
     if (Test-Path $lnkPath) {

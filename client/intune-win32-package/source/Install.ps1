@@ -57,6 +57,7 @@ try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $payload = @(
         'Invoke-DeviceWipe.ps1',
+        'Invoke-WipeFromTask.ps1',
         'WipeConfirmationDialog.ps1',
         'Launch-Wipe.ps1',
         'version.txt'
@@ -114,6 +115,76 @@ try {
     New-ItemProperty -Path $RegPath -Name 'InstallDir'   -Value $InstallDir  -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $RegPath -Name 'InstalledOn'  -Value ((Get-Date).ToString('s')) -PropertyType String -Force | Out-Null
     Write-Host "  Registry: $RegPath  (Version=$Version)"
+
+    # --- Scheduled task (SYSTEM, on-demand, executable by Users) ------------
+    # The end-user launcher (Launch-Wipe.ps1) runs in user context and
+    # cannot use the device certificate's private key (ACL'd to SYSTEM).
+    # This scheduled task runs as SYSTEM so Invoke-WipeFromTask.ps1 can do
+    # the TLS client-auth call; the launcher only triggers it on demand.
+    $TaskFolder  = '\IntuneWipeClient\'
+    $TaskName    = 'InvokeWipe'
+    $TaskFull    = ($TaskFolder.TrimEnd('\')) + '\' + $TaskName
+
+    $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Self-service Intune device wipe (runs as SYSTEM, triggered on-demand by Launch-Wipe.ps1).</Description>
+    <Author>Contoso IT</Author>
+    <URI>$TaskFull</URI>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$InstallDir\Invoke-WipeFromTask.ps1"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+
+    $tmpXml = Join-Path $env:TEMP ("IntuneWipeTask_{0}.xml" -f ([guid]::NewGuid()))
+    [IO.File]::WriteAllText($tmpXml, $taskXml, [Text.UnicodeEncoding]::new($false,$true))
+    & schtasks.exe /Create /TN $TaskFull /XML $tmpXml /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "schtasks /Create failed (exit $LASTEXITCODE)" }
+    Remove-Item -LiteralPath $tmpXml -Force -ErrorAction SilentlyContinue
+
+    # Allow BUILTIN\Users to read AND execute the task.
+    #   FA = Full Access (kept for SYSTEM and BUILTIN\Administrators)
+    #   GR|GX = Generic Read + Generic Execute for BUILTIN\Users
+    $sddl = 'D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;BU)'
+    $svc  = New-Object -ComObject 'Schedule.Service'
+    $svc.Connect()
+    $folder = $svc.GetFolder($TaskFolder.TrimEnd('\'))
+    $task   = $folder.GetTask($TaskName)
+    $task.SetSecurityDescriptor($sddl, 0)
+    Write-Host "  Registered scheduled task: $TaskFull (SYSTEM, on-demand, executable by Users)"
+
+    # --- Data dir for last-result.json + per-user logs --------------------
+    $DataDir = Join-Path $env:ProgramData 'IntuneWipeClient'
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
     Write-Host "Install completed successfully."
     exit 0

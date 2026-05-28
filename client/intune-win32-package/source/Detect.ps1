@@ -12,7 +12,7 @@
 #>
 
 $ErrorActionPreference = 'SilentlyContinue'
-$ExpectedVersion = '1.0.2'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
+$ExpectedVersion = '1.0.3'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
 $RegPath         = 'HKLM:\SOFTWARE\Contoso\IntuneWipeClient'
 $InstallDir      = Join-Path $env:ProgramFiles 'IntuneWipeClient'
 $Marker          = Join-Path $InstallDir 'Invoke-DeviceWipe.ps1'
@@ -25,6 +25,7 @@ if ($installed -eq $ExpectedVersion -and (Test-Path $Marker)) {
 }
 
 exit 0  # exit 0 with NO output => Not detected (Intune contract)
+
 
 
 
