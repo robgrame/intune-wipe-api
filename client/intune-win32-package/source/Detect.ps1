@@ -12,10 +12,11 @@
 #>
 
 $ErrorActionPreference = 'SilentlyContinue'
-$ExpectedVersion = '1.0.5'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
+$ExpectedVersion = '1.0.6'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
 $RegPath         = 'HKLM:\SOFTWARE\MSLABS\IntuneWipeClient'
 $RegSubKey       = 'SOFTWARE\MSLABS\IntuneWipeClient'
-$InstallDir      = Join-Path $env:ProgramFiles 'IntuneWipeClient'
+$ProgramFiles64  = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$InstallDir      = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $Marker          = Join-Path $InstallDir 'Invoke-DeviceWipe.ps1'
 
 # Read from the 64-bit hive explicitly so detection works regardless of
@@ -36,6 +37,7 @@ if ($installed -eq $ExpectedVersion -and (Test-Path $Marker)) {
 }
 
 exit 0  # exit 0 with NO output => Not detected (Intune contract)
+
 
 
 

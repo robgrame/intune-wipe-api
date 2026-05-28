@@ -21,7 +21,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$InstallDir = Join-Path $env:ProgramFiles 'IntuneWipeClient'
+$ProgramFiles64 = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$InstallDir = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $DialogPath = Join-Path $InstallDir       'WipeConfirmationDialog.ps1'
 $DataDir    = Join-Path $env:ProgramData  'IntuneWipeClient'
 $ResultPath = Join-Path $DataDir          'last-result.json'

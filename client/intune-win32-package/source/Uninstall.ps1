@@ -10,7 +10,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$InstallDir = Join-Path $env:ProgramFiles 'IntuneWipeClient'
+$ProgramFiles64 = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$InstallDir = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $RegPath    = 'HKLM:\SOFTWARE\MSLABS\IntuneWipeClient'
 $RegSubKey  = 'SOFTWARE\MSLABS\IntuneWipeClient'
 $LogDir     = Join-Path $env:ProgramData  'IntuneWipeClient\Logs'
@@ -42,6 +43,13 @@ try {
     if (Test-Path $InstallDir) {
         Remove-Item $InstallDir -Recurse -Force
         Write-Host "Removed: $InstallDir"
+    }
+    # Best-effort cleanup of legacy install path under Program Files (x86)
+    # left over by earlier 32-bit-redirected installs.
+    $legacyX86 = Join-Path ${env:ProgramFiles(x86)} 'IntuneWipeClient'
+    if ($legacyX86 -and (Test-Path $legacyX86) -and ($legacyX86 -ne $InstallDir)) {
+        Remove-Item $legacyX86 -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Removed legacy: $legacyX86"
     }
 
     # Delete the detection key from the 64-bit hive (where Install.ps1 wrote it).

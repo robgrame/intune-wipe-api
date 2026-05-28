@@ -29,7 +29,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
-$InstallDir   = Join-Path $env:ProgramFiles 'IntuneWipeClient'
+# $env:ProgramFiles returns "C:\Program Files (x86)" inside a 32-bit process
+# (Intune Management Extension runs Win32 install scripts under 32-bit PS).
+# $env:ProgramW6432 is always the native 64-bit Program Files path on both
+# 32-bit and 64-bit processes, so we pin to it for consistency.
+$ProgramFiles64 = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+
+$InstallDir   = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $LogDir       = Join-Path $env:ProgramData  'IntuneWipeClient\Logs'
 $ConfigPath   = Join-Path $InstallDir       'config.json'
 $RegPath      = 'HKLM:\SOFTWARE\MSLABS\IntuneWipeClient'
