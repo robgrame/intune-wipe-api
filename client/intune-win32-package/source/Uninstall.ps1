@@ -29,10 +29,13 @@ try {
     } catch { }
 
     $allUsersStart = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
-    $lnkPath = Join-Path $allUsersStart ("{0}.lnk" -f $ShortcutName)
-    if (Test-Path $lnkPath) {
-        Remove-Item $lnkPath -Force
-        Write-Host "Removed shortcut: $lnkPath"
+    $publicDesktop = Join-Path $env:PUBLIC      'Desktop'
+    foreach ($folder in @($allUsersStart, $publicDesktop)) {
+        $lnkPath = Join-Path $folder ("{0}.lnk" -f $ShortcutName)
+        if (Test-Path -LiteralPath $lnkPath) {
+            Remove-Item -LiteralPath $lnkPath -Force
+            Write-Host "Removed shortcut: $lnkPath"
+        }
     }
 
     if (Test-Path $InstallDir) {

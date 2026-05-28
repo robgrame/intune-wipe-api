@@ -95,18 +95,31 @@ try {
     Set-Acl -LiteralPath $ConfigPath -AclObject $acl
     Write-Host "  Wrote config.json (restricted ACL)"
 
-    # --- Start Menu shortcut (All Users) ------------------------------------
-    $allUsersStart = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
-    $lnkPath = Join-Path $allUsersStart ("{0}.lnk" -f $ShortcutName)
+    # --- Shortcuts (Start Menu + Public Desktop, All Users) -----------------
+    # Use a "speaking" icon: imageres.dll,229 = the "Reset this PC" icon on
+    # Windows 10/11. Falls back gracefully if the icon index isn't present.
+    $iconLocation   = "$env:WINDIR\System32\imageres.dll,229"
+    $shortcutTarget = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $shortcutArgs   = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstallDir\Launch-Wipe.ps1`""
+    $shortcutDesc   = "Esegue il reset aziendale di questo dispositivo (richiede conferma)."
     $wsh = New-Object -ComObject WScript.Shell
-    $lnk = $wsh.CreateShortcut($lnkPath)
-    $lnk.TargetPath       = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $lnk.Arguments        = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstallDir\Launch-Wipe.ps1`""
-    $lnk.WorkingDirectory = $InstallDir
-    $lnk.IconLocation     = "$env:WINDIR\System32\shell32.dll,238"  # red shield-ish
-    $lnk.Description      = "Esegue il reset aziendale di questo dispositivo (richiede conferma)."
-    $lnk.Save()
-    Write-Host "  Created shortcut: $lnkPath"
+
+    $allUsersStart  = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
+    $publicDesktop  = Join-Path $env:PUBLIC      'Desktop'
+    foreach ($folder in @($allUsersStart, $publicDesktop)) {
+        if (-not (Test-Path -LiteralPath $folder)) {
+            New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        }
+        $lnkPath = Join-Path $folder ("{0}.lnk" -f $ShortcutName)
+        $lnk = $wsh.CreateShortcut($lnkPath)
+        $lnk.TargetPath       = $shortcutTarget
+        $lnk.Arguments        = $shortcutArgs
+        $lnk.WorkingDirectory = $InstallDir
+        $lnk.IconLocation     = $iconLocation
+        $lnk.Description      = $shortcutDesc
+        $lnk.Save()
+        Write-Host "  Created shortcut: $lnkPath"
+    }
 
     # --- Detection registry key --------------------------------------------
     New-Item -Path $RegPath -Force | Out-Null
