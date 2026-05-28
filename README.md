@@ -299,7 +299,7 @@ Tutte le impostazioni sono app settings della Function App:
 | `Idempotency__StorageAccount` | _(da bicep)_ | Storage account del ledger blob |
 | `Idempotency__BlobContainer` | `wipe-ledger` | Container blob del ledger idempotency |
 | `Wipe__AllowedGroupId` | _(obbligatorio)_ | ObjectId gruppo Entra |
-| `Wipe__KeepEnrollmentData` | `false` | Mantiene enrollment Intune |
+| `Wipe__KeepEnrollmentData` | `false` | Mantiene enrollment Intune (Autopilot rimane registrato; il device si ri-enrolla senza factory-reset completo). **Utile in DEV** per evitare il provisioning Autopilot da zero ad ogni test. In `dev` corrente è impostato a `true`. |
 | `Wipe__KeepUserData` | `false` | Mantiene dati utente |
 | `Graph__TenantId` | tenant corrente | Tenant per i token Graph |
 | `Graph__ManagedIdentityClientId` | _(da bicep)_ | clientId della UAMI |
