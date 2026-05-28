@@ -41,11 +41,11 @@ param revocationFlag string = 'ExcludeRoot'
 @description('Require Client Authentication EKU (1.3.6.1.5.5.7.3.2) on the client certificate.')
 param requireClientAuthEku bool = true
 
-@description('Which claim from the client certificate identifies the device. Auto tries SanUri -> SanDns -> SubjectCN (GUID-shaped) -> ThumbprintToDeviceMap, which is PKI-agnostic and recommended for multi-tenant scenarios. Thumbprint uses ONLY the operator-maintained map (clientCertThumbprintToDeviceMap). SubjectCN/SanDns/SanUri assume the cert embeds the device GUID. Disabled turns off cert<->device binding (NOT recommended).')
+@description('Which claim from the client certificate identifies the device. Auto (recommended for multi-PKI) tries in order: ThumbprintToDeviceMap (operator intent wins) -> SanUri -> SanDns -> SubjectCN. All strategies are STRICT: the SAN value or CN must EQUAL a GUID (no substring extraction, no full-DN scan), and the GUID must equal body.entraDeviceId. Thumbprint uses ONLY the operator map. Disabled turns off cert<->device binding (NOT recommended).')
 @allowed([ 'Auto', 'SubjectCN', 'SanDns', 'SanUri', 'Thumbprint', 'Disabled' ])
 param deviceIdBindingClaim string = 'Auto'
 
-@description('Operator-maintained mapping cert-thumbprint -> EntraDeviceId for the Thumbprint and Auto binding modes. Format: "THUMB1=guid1|THUMB2=guid2". Use this when the client certificate Subject does not embed the device id (e.g., third-party PKI templates the customer cannot change).')
+@description('Operator-maintained mapping cert-thumbprint -> EntraDeviceId for the Thumbprint and Auto binding modes. Format: "THUMB1=guid1|THUMB2=guid2". Duplicate thumbprints mapping to different GUIDs are rejected fail-closed at startup. Use this when the client certificate Subject/SAN does not embed the device id (third-party PKI templates).')
 @secure()
 param clientCertThumbprintToDeviceMap string = ''
 

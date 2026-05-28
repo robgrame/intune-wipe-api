@@ -93,8 +93,9 @@ public sealed class ClientCertValidator
 
         // Operator-maintained mapping: cert thumbprint -> EntraDeviceId.
         // Format: "THUMB1=guid1|THUMB2=guid2" (separators , ; | accepted). Whitespace ignored.
-        // Used by Thumbprint binding mode and as final fallback for Auto mode. This is the
-        // PKI-neutral escape hatch when the certificate Subject does not embed the device id.
+        // Used by Thumbprint binding mode and as the first-priority strategy in Auto mode (explicit
+        // operator intent wins). This is the PKI-neutral escape hatch when the certificate Subject
+        // does not embed the device id.
         _thumbprintToDeviceMap = new(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in ParseCsv(cfg["ClientCert:ThumbprintToDeviceMap"]))
         {
@@ -108,8 +109,22 @@ public sealed class ClientCertValidator
                 _log.LogWarning("ThumbprintToDeviceMap entry skipped: '{DeviceId}' is not a GUID (thumb={Thumb}).", devId, thumb);
                 continue;
             }
+            // Fail-closed on conflicting duplicate (same thumb -> different GUID): a silent overwrite
+            // is a privileged misconfiguration that could rebind a cert to the wrong device. Same
+            // thumb mapped to the SAME GUID twice is accepted idempotently.
+            if (_thumbprintToDeviceMap.TryGetValue(thumb, out var existing)
+                && !string.Equals(existing, g.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogError(
+                    "ThumbprintToDeviceMap CONFLICT: thumb={Thumb} already mapped to {Existing}; ignoring duplicate mapping to {Duplicate}.",
+                    thumb, existing, g);
+                continue;
+            }
             _thumbprintToDeviceMap[thumb] = g.ToString();
-            _log.LogInformation("Loaded thumbprint->device mapping: {Thumb} -> {DeviceId}", thumb, g);
+        }
+        if (_thumbprintToDeviceMap.Count > 0)
+        {
+            _log.LogInformation("Loaded {Count} thumbprint->device mapping(s).", _thumbprintToDeviceMap.Count);
         }
     }
 
@@ -298,28 +313,23 @@ public sealed class ClientCertValidator
 
     private static string? ExtractFromSubject(X509Certificate2 cert)
     {
-        // Prefer the leaf CN, but fall back to scanning the full DN for any GUID-shaped value
-        // (covers customer PKIs that put the device id in OU=, DC=, serialNumber=, etc.).
+        // STRICT: the leaf CN must EQUAL a GUID. We deliberately do NOT scan the full DN or
+        // accept GUID-shaped substrings: any DN component (OU=, serialNumber=, ...) or CN value
+        // that an attacker can influence via a permissive cert template would otherwise allow
+        // them to bind to a victim device id and bypass IDOR protection.
         var cn = cert.GetNameInfo(X509NameType.SimpleName, false);
-        var fromCn = string.IsNullOrWhiteSpace(cn) ? null : ExtractGuid(cn);
-        if (fromCn is not null) return fromCn;
-        return string.IsNullOrWhiteSpace(cert.Subject) ? null : ExtractGuid(cert.Subject);
+        return ExactGuid(cn);
     }
 
     private static string? FirstSanValue(X509Certificate2 cert, X509NameType nameType)
     {
-        var v = cert.GetNameInfo(nameType, false);
-        return string.IsNullOrWhiteSpace(v) ? null : ExtractGuid(v);
+        // STRICT: the SAN value itself must parse as a bare GUID. Substring extraction would
+        // accept SAN entries like "<victimGuid>.attacker.example" and silently bind to the victim.
+        return ExactGuid(cert.GetNameInfo(nameType, false));
     }
 
-    private static string? ExtractGuid(string raw)
-    {
-        // Accept the raw value if it's already a GUID, otherwise try to extract one.
-        if (Guid.TryParse(raw.Trim(), out var g)) return g.ToString();
-        var m = System.Text.RegularExpressions.Regex.Match(raw,
-            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
-        return m.Success ? m.Value : null;
-    }
+    private static string? ExactGuid(string? raw)
+        => !string.IsNullOrWhiteSpace(raw) && Guid.TryParse(raw.Trim(), out var g) ? g.ToString() : null;
 
     private static IEnumerable<string> ParseCsv(string? value)
         => (value ?? string.Empty)
