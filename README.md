@@ -40,10 +40,67 @@ e chiama Microsoft Graph.
 | 1 | **`Invoke-DeviceWipe.ps1`** (PowerShell 5.1) | Raccoglie identità device, mostra UI WinForms di conferma (irreversibilità + ~90 min di indisponibilità + parola `WIPE` da digitare), invoca l'API in mTLS con timestamp + nonce anti-replay. |
 | 2 | **`WipeRequest`** (HTTP Function) | Valida headers anti-replay, valida cert client (X509 chain + EKU + CRL opzionale), verifica binding cert↔device, valida payload, accoda messaggio, risponde `202 Accepted` con `correlationId`. |
 | 3 | **Azure Storage Queue** `wipe-requests` | Disaccoppia ricezione ed esecuzione; retry automatici, dead-letter su `wipe-requests-poison`. |
-| 4 | **`WipeProcessor`** (Queue trigger, non esposta) | Risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`. Classifica errori Graph transient/permanent. |
+| 4 | **`WipeProcessor`** (Queue trigger, non esposta) | **Dispatcher sottile**: valida formato + app role, traduce il messaggio in un `ActionDispatchMessage{ActionType="wipe"}` e lo accoda su `action-dispatch`. Nessuna logica di business: gli step di wipe vivono dentro `WipeActionRunner`. |
+| 4b | **Azure Storage Queue** `action-dispatch` | Coda del router plug-in. Decouple il dispatcher dai runner concreti; nuove capability (lock, BitLocker rotate, ...) si aggiungono come nuovo `IActionRunner` senza toccare HTTP, queue o dispatcher. |
+| 4c | **`ActionDispatch`** (Queue trigger, non esposta) | **Router** plug-in: deserializza la busta, risolve l'`IActionRunner` per `ActionType` via `ActionRunnerRegistry`, esegue. Onorare `FailOnError` per la retry policy della coda. |
+| 4d | **`WipeActionRunner`** (`IActionRunner`, Type="wipe") | Logica wipe: risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`, inizializza status tracker, esegue nudges (sync + reboot) best-effort. |
 | 5 | **Blob `wipe-ledger`** | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche a fronte di retry queue at-least-once. |
 | 6 | **Due User-Assigned Managed Identity** | `uami-web` (Function App pubblica) ha **solo** `Storage Queue Data Message Sender` sulla coda — niente Graph. `uami` (worker) ha `Storage Blob Data Owner` + `Storage Queue Data Contributor` + i consent Microsoft Graph. Anche se la superficie pubblica venisse compromessa, l'attaccante non può pilotare il wipe via Graph. |
 | 7 | **Application Insights** | Audit completo con `correlationId`. |
+
+### Architettura plug-in (router + runner)
+
+```text
+HTTP / mTLS  ──▶  WipeRequest  ──▶  [wipe-requests]  ──▶  WipeProcessor (DISPATCHER)
+                                                                  │ enqueue ActionDispatchMessage{type="wipe"}
+                                                                  ▼
+                                                          [action-dispatch]
+                                                                  │
+                                                                  ▼
+                                                          ActionDispatch (ROUTER)
+                                                                  │ ActionRunnerRegistry.Resolve(type)
+                                                                  ▼
+                                                          ┌────────────────────────┐
+                                                          │ WipeActionRunner       │  Type="wipe"        (built-in)
+                                                          │ LockActionRunner       │  Type="lock"        (futuro)
+                                                          │ BitLockerRotateRunner  │  Type="bitlocker"   (futuro)
+                                                          └────────────────────────┘
+                                                                 ▲
+                                                                 │ aggiungi qui per nuove capability
+```
+
+Le risorse **CORE** (HTTP function, queue `wipe-requests`/`action-dispatch`,
+`WipeProcessor`, `ActionDispatch`) non vanno mai modificate per aggiungere
+una nuova capability: il contratto è la busta `ActionDispatchMessage` e
+l'interfaccia `IActionRunner`.
+
+#### Aggiungere un nuovo action runner
+
+1. Crea una classe in `src/Actions/Runners/` che implementa `IActionRunner`:
+   ```csharp
+   public sealed class LockActionRunner : IActionRunner
+   {
+       public string Type => "lock";
+       public async Task RunAsync(ActionDispatchMessage env, CancellationToken ct)
+       {
+           var payload = env.Payload.Deserialize<LockPayload>();
+           // ... logica + audit + idempotency a piacere
+       }
+   }
+   ```
+2. Registralo in `Program.cs`:
+   ```csharp
+   services.AddSingleton<IActionRunner, LockActionRunner>();
+   ```
+3. Aggiungi un producer (nuovo endpoint HTTP, o estensione di `WipeRequest`)
+   che enqueue una `ActionDispatchMessage{ActionType="lock", Payload=...}`
+   via `ActionDispatchEnqueuer`.
+
+Nessuna modifica a `WipeRequestFunction`, `WipeProcessorFunction`,
+`ActionDispatchFunction`, alle code o al Bicep. Eventi audit dedicati:
+`action.dispatch.enqueued`, `action.dispatch.received`, `action.dispatch.completed`,
+`action.dispatch.runner-failed`, `action.dispatch.no-runner`,
+`action.dispatch.invalid-envelope`.
 
 ### Isolamento delle due Function App
 

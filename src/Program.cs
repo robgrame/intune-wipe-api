@@ -3,6 +3,8 @@ using Azure.Data.Tables;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Queues;
+using IntuneWipeApi.Actions;
+using IntuneWipeApi.Actions.Runners;
 using IntuneWipeApi.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
@@ -150,6 +152,42 @@ var host = new HostBuilder()
             return new GraphServiceClient(cred, new[] { "https://graph.microsoft.com/.default" });
         });
         services.AddSingleton<GraphWipeService>();
+
+        // --- Plug-in action dispatch pipeline -----------------------------
+        // ActionDispatchEnqueuer wraps a dedicated QueueClient (action-dispatch
+        // queue, same storage account as wipe-requests). Adding a new action
+        // capability is a one-liner here: services.AddSingleton<IActionRunner, MyRunner>().
+        services.AddSingleton(sp =>
+        {
+            var cred = sp.GetRequiredService<TokenCredential>();
+            var queueName = cfg["Actions:DispatchQueueName"] ?? "action-dispatch";
+            var account = cfg["Queue:StorageAccount"]
+                ?? cfg["AzureWebJobsStorage__accountName"]
+                ?? cfg["Idempotency:StorageAccount"];
+            // Base64 encoding matches the Functions queue trigger default —
+            // WipeRequestFunction base64-encodes manually for the SAME reason
+            // (see comment there). Using QueueMessageEncoding.Base64 lets the
+            // SDK do it transparently for any caller of this client.
+            var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+            QueueClient client;
+            if (string.IsNullOrWhiteSpace(account))
+            {
+                client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
+                client.CreateIfNotExists();
+            }
+            else
+            {
+                client = new QueueClient(
+                    new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
+                    cred, options);
+            }
+            return new ActionDispatchQueueClient(client);
+        });
+        services.AddSingleton<ActionDispatchEnqueuer>();
+        services.AddSingleton<ActionRunnerRegistry>();
+        // Built-in runners — add new IActionRunner registrations below for new capabilities.
+        services.AddSingleton<IActionRunner, WipeActionRunner>();
+        // ------------------------------------------------------------------
 
         // Wipe action status tracker (separate table from auditevents because
         // it's upsert-per-correlationId, not append-only). Pollato dal

@@ -63,6 +63,16 @@ public static class AuditEvents
     public const string ActionPollTimeout     = "wipe.action.poll-timeout";     // gave up polling after PollMaxAgeHours
     public const string ActionPollError       = "wipe.action.poll-error";       // Graph call failed (transient)
 
+    // Plug-in dispatch pipeline (action-dispatch queue + ActionDispatchFunction).
+    // The wipe processor enqueues an ActionDispatchMessage with ActionType="wipe";
+    // the router resolves the matching IActionRunner and invokes it.
+    public const string ActionDispatchEnqueued       = "action.dispatch.enqueued";        // producer side
+    public const string ActionDispatchReceived       = "action.dispatch.received";        // router consumed envelope
+    public const string ActionDispatchNoRunner       = "action.dispatch.no-runner";       // unknown ActionType
+    public const string ActionDispatchInvalidEnvelope= "action.dispatch.invalid-envelope";// JSON malformed
+    public const string ActionDispatchCompleted      = "action.dispatch.completed";       // runner returned OK
+    public const string ActionDispatchRunnerFailed   = "action.dispatch.runner-failed";   // runner threw
+
     // Shared property keys (use these consistently so KQL is uniform)
     public static class Prop
     {
@@ -101,5 +111,8 @@ public static class AuditEvents
         public const string DeviceOsVersion         = "deviceOsVersion";
         public const string DeviceOperatingSystem   = "deviceOperatingSystem";
         public const string MinutesSinceLastSync    = "minutesSinceLastSync";
+        // Plug-in dispatch
+        public const string ActionType              = "actionType";
+        public const string SchemaVersion           = "schemaVersion";
     }
 }

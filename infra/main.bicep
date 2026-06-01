@@ -62,6 +62,9 @@ param keepUserData bool = false
 @description('Storage queue name for wipe requests')
 param wipeQueueName string = 'wipe-requests'
 
+@description('Storage queue name for plug-in action dispatch (router queue consumed by ActionDispatchFunction).')
+param actionDispatchQueueName string = 'action-dispatch'
+
 @description('Blob container name used as the idempotency ledger for wipe operations')
 param ledgerContainerName string = 'wipe-ledger'
 
@@ -146,6 +149,14 @@ resource queueSvc 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' =
 resource wipeQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
   parent: queueSvc
   name: wipeQueueName
+}
+
+// Plug-in router queue. Produced by WipeProcessorFunction (and any future
+// producer), consumed by ActionDispatchFunction which fans out to the
+// matching IActionRunner.
+resource actionDispatchQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueSvc
+  name: actionDispatchQueueName
 }
 
 resource blobSvc 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
@@ -248,6 +259,9 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         // Selector: keep only the HTTP trigger on this app.
         { name: 'AzureWebJobs.WipeProcessor.Disabled', value: 'true' }
         { name: 'AzureWebJobs.WipeStatusPoller.Disabled', value: 'true' }
+        // The plug-in router lives on the worker app — disable here so the
+        // web app doesn't try to bind the action-dispatch queue trigger.
+        { name: 'AzureWebJobs.ActionDispatch.Disabled', value: 'true' }
         // Queue write (enqueue only — identity has Sender role on the queue
         // resource of the *worker's* storage account, not on this app's runtime
         // storage).
@@ -324,6 +338,7 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         // Queue + ledger live in this app's own storage account.
         { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
+        { name: 'Actions__DispatchQueueName', value: actionDispatchQueueName }
         { name: 'Idempotency__BlobContainer', value: ledgerContainerName }
         { name: 'Idempotency__StorageAccount', value: storageProc.name }
         // Audit persistence (dual-write to Table Storage alongside App Insights).
