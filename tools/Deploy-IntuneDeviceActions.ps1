@@ -228,9 +228,30 @@ function Invoke-Publish {
         $zip = Join-Path $PublishDir "$($p.Name).zip"
         if (Test-Path $zip) { Remove-Item $zip -Force }
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        # Use ZipFile.CreateFromDirectory: produces entries with forward-slash separators
-        # required by Kudu/Flex Consumption (.azurefunctions/ root marker).
-        [IO.Compression.ZipFile]::CreateFromDirectory($outDir, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+        Add-Type -AssemblyName System.IO.Compression
+        # ZipFile.CreateFromDirectory on .NET Framework (Windows PowerShell 5.1)
+        # writes entries with backslash separators, which Kudu / Flex Consumption
+        # rejects ("Cannot find required .azurefunctions directory at root level").
+        # Build the archive manually, normalizing every entry name to forward slashes.
+        # writes entries with backslash separators, which Kudu / Flex Consumption
+        # rejects ("Cannot find required .azurefunctions directory at root level").
+        # Build the archive manually, normalizing every entry name to forward slashes.
+        $fs = [IO.File]::Open($zip, [IO.FileMode]::Create)
+        try {
+            $archive = New-Object IO.Compression.ZipArchive($fs, [IO.Compression.ZipArchiveMode]::Create)
+            try {
+                $rootLen = (Resolve-Path $outDir).Path.TrimEnd('\').Length + 1
+                Get-ChildItem -LiteralPath $outDir -Recurse -File -Force | ForEach-Object {
+                    $entryName = $_.FullName.Substring($rootLen).Replace('\','/')
+                    $entry = $archive.CreateEntry($entryName, [IO.Compression.CompressionLevel]::Optimal)
+                    $es = $entry.Open()
+                    try {
+                        $src = [IO.File]::OpenRead($_.FullName)
+                        try { $src.CopyTo($es) } finally { $src.Dispose() }
+                    } finally { $es.Dispose() }
+                }
+            } finally { $archive.Dispose() }
+        } finally { $fs.Dispose() }
         Write-Ok "$($p.Name).zip ($([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB)"
     }
 }
