@@ -1,0 +1,389 @@
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+    End-to-end deploy of IntuneDeviceActions (Web + Proc + Wipe Function Apps).
+
+.DESCRIPTION
+    Idempotent helper that:
+      1. Verifies / auto-installs prerequisites: .NET 10 SDK, Azure CLI, Bicep.
+      2. Logs in to Azure (interactive) and selects subscription.
+      3. Prompts only for parameters not supplied on the command line.
+      4. Builds + publishes Web/Proc/Wipe and creates 3 deployment zips.
+      5. Deploys infra via Bicep (creates the RG if missing).
+      6. Restarts the 3 Function Apps (RBAC propagation) and deploys the zips.
+      7. Runs a smoke test and prints remaining manual steps
+         (Graph admin consent, optional AppConfig seed).
+
+    Safe to re-run. Each phase can be skipped with -Skip* switches.
+
+.PARAMETER ResourceGroup
+    Target resource group (created if missing).
+
+.PARAMETER Location
+    Azure region (default westeurope).
+
+.PARAMETER SubscriptionId
+    Subscription to deploy into. If omitted, current az context is used.
+
+.PARAMETER NamePrefix
+    Used only to (a) build the default RG name when ResourceGroup is omitted,
+    and (b) look up the 3 deployed Function Apps by prefix. The actual naming
+    is controlled by main.parameters.json (namePrefix parameter).
+
+.PARAMETER ParametersFile
+    Bicep parameters file. Default: infra\main.parameters.json.
+
+.PARAMETER SkipPrereqInstall
+    Don't try to install missing prereqs - error out instead.
+
+.PARAMETER SkipPublish
+    Skip dotnet publish + zip step (reuse existing publish\*.zip).
+
+.PARAMETER SkipInfra
+    Skip the Bicep deploy step.
+
+.PARAMETER SkipDeploy
+    Skip the function-zip deploy step.
+
+.PARAMETER NoSmokeTest
+    Skip the final HTTP smoke test.
+
+.EXAMPLE
+    .\tools\Deploy-IntuneDeviceActions.ps1
+
+.EXAMPLE
+    .\tools\Deploy-IntuneDeviceActions.ps1 -ResourceGroup rg-idactions-dev -Location westeurope -SubscriptionId xxxx
+
+.EXAMPLE
+    # Rebuild + redeploy only the function code, leaving the infra alone:
+    .\tools\Deploy-IntuneDeviceActions.ps1 -ResourceGroup rg-idactions-dev -SkipInfra
+#>
+[CmdletBinding()]
+param(
+    [string]$ResourceGroup,
+    [string]$Location        = 'westeurope',
+    [string]$SubscriptionId,
+    [string]$NamePrefix      = 'idactions',
+    [string]$ParametersFile,
+    [switch]$SkipPrereqInstall,
+    [switch]$SkipPublish,
+    [switch]$SkipInfra,
+    [switch]$SkipDeploy,
+    [switch]$NoSmokeTest
+)
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference    = 'SilentlyContinue'
+
+# -- Paths -------------------------------------------------------------------
+$RepoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$InfraDir   = Join-Path $RepoRoot 'infra'
+$BicepFile  = Join-Path $InfraDir 'main.bicep'
+$DefaultPF  = Join-Path $InfraDir 'main.parameters.json'
+$PublishDir = Join-Path $RepoRoot 'publish'
+
+if (-not $ParametersFile) { $ParametersFile = $DefaultPF }
+
+# -- Pretty printers --------------------------------------------------------
+function Write-Step($m) { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
+function Write-Ok($m)   { Write-Host "    [OK]   $m" -ForegroundColor Green }
+function Write-Warn2($m){ Write-Host "    [WARN] $m" -ForegroundColor Yellow }
+function Write-Err($m)  { Write-Host "    [ERR]  $m" -ForegroundColor Red }
+function Test-Cmd($n)   { [bool](Get-Command $n -ErrorAction SilentlyContinue) }
+
+# -- Prereqs ----------------------------------------------------------------
+function Test-Winget { Test-Cmd winget }
+
+function Install-DotNet10 {
+    if (Test-Winget) {
+        Write-Host "    installing .NET 10 SDK via winget..."
+        & winget install -e --id Microsoft.DotNet.SDK.10 `
+            --accept-package-agreements --accept-source-agreements --silent | Out-Null
+        # Reload PATH from registry
+        $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                    [Environment]::GetEnvironmentVariable('Path','User')
+    }
+    else {
+        Write-Host "    downloading dotnet-install.ps1..."
+        $script = Join-Path $env:TEMP 'dotnet-install.ps1'
+        Invoke-WebRequest 'https://dot.net/v1/dotnet-install.ps1' -OutFile $script -UseBasicParsing
+        $installDir = Join-Path $env:LOCALAPPDATA 'Microsoft\dotnet'
+        & $script -Channel 10.0 -InstallDir $installDir
+        if (-not ($env:Path -split ';' | Where-Object { $_ -eq $installDir })) {
+            $env:Path = "$installDir;$env:Path"
+        }
+    }
+}
+
+function Confirm-DotNet10 {
+    Write-Step '.NET 10 SDK'
+    if (Test-Cmd dotnet) {
+        $sdks = & dotnet --list-sdks 2>$null
+        $v10  = $sdks | Where-Object { $_ -match '^10\.' } | Select-Object -First 1
+        if ($v10) { Write-Ok ".NET SDK $($v10 -replace ' .*','') present"; return }
+    }
+    if ($SkipPrereqInstall) { throw '.NET 10 SDK missing; re-run without -SkipPrereqInstall.' }
+    Install-DotNet10
+    $sdks = & dotnet --list-sdks 2>$null
+    if (-not ($sdks | Where-Object { $_ -match '^10\.' })) {
+        throw '.NET 10 install did not complete - restart shell and retry.'
+    }
+    Write-Ok '.NET 10 SDK installed'
+}
+
+function Install-AzCli {
+    if (Test-Winget) {
+        Write-Host "    installing Azure CLI via winget..."
+        & winget install -e --id Microsoft.AzureCLI `
+            --accept-package-agreements --accept-source-agreements --silent | Out-Null
+    }
+    else {
+        Write-Host "    downloading Azure CLI MSI (requires admin)..."
+        $msi = Join-Path $env:TEMP 'AzureCLI.msi'
+        Invoke-WebRequest 'https://aka.ms/installazurecliwindows' -OutFile $msi -UseBasicParsing
+        Start-Process msiexec.exe -Wait -ArgumentList "/I `"$msi`" /quiet"
+    }
+    $azBin = Join-Path ${env:ProgramFiles} 'Microsoft SDKs\Azure\CLI2\wbin'
+    if ((Test-Path $azBin) -and ($env:Path -notlike "*$azBin*")) { $env:Path = "$azBin;$env:Path" }
+}
+
+function Confirm-AzCli {
+    Write-Step 'Azure CLI'
+    if (Test-Cmd az) {
+        $j = & az version --only-show-errors 2>$null | ConvertFrom-Json
+        if ($j.'azure-cli') { Write-Ok "Azure CLI $($j.'azure-cli') present"; return }
+    }
+    if ($SkipPrereqInstall) { throw 'Azure CLI missing; re-run without -SkipPrereqInstall.' }
+    Install-AzCli
+    if (-not (Test-Cmd az)) { throw 'Azure CLI install failed - restart shell and retry.' }
+    Write-Ok 'Azure CLI installed'
+}
+
+function Confirm-Bicep {
+    Write-Step 'Bicep'
+    $v = & az bicep version --only-show-errors 2>&1
+    if ($LASTEXITCODE -eq 0) { Write-Ok ($v -join ' '); return }
+    if ($SkipPrereqInstall) { throw 'Bicep missing; re-run without -SkipPrereqInstall.' }
+    & az bicep install --only-show-errors 2>&1 | Out-Null
+    if ((& az bicep version --only-show-errors 2>&1) -and $LASTEXITCODE -eq 0) { Write-Ok 'Bicep installed' }
+    else { throw 'Bicep install failed.' }
+}
+
+# -- Azure auth -------------------------------------------------------------
+function Confirm-AzLogin {
+    Write-Step 'Azure authentication'
+    $acc = & az account show --only-show-errors 2>$null | ConvertFrom-Json
+    if (-not $acc) {
+        Write-Host "    no active session - launching az login..."
+        & az login --only-show-errors | Out-Null
+        $acc = & az account show --only-show-errors | ConvertFrom-Json
+    }
+    if ($script:SubscriptionId -and $acc.id -ne $script:SubscriptionId) {
+        & az account set -s $script:SubscriptionId --only-show-errors
+        $acc = & az account show --only-show-errors | ConvertFrom-Json
+    }
+    Write-Ok "Subscription: $($acc.name)  ($($acc.id))"
+    Write-Ok "Tenant:       $($acc.tenantId)"
+    Write-Ok "Signed-in as: $($acc.user.name)"
+}
+
+# -- Interactive inputs -----------------------------------------------------
+function Resolve-Inputs {
+    Write-Step 'Resolving deployment parameters'
+    if (-not $script:ResourceGroup) {
+        $def  = "rg-$NamePrefix-dev"
+        $ans  = Read-Host "Resource group name [$def]"
+        $script:ResourceGroup = if ($ans) { $ans } else { $def }
+    }
+    if (-not $script:Location -or $script:Location -eq 'westeurope') {
+        $ans = Read-Host "Location [$($script:Location)]"
+        if ($ans) { $script:Location = $ans }
+    }
+    if (-not (Test-Path $ParametersFile)) {
+        throw "Parameters file not found: $ParametersFile"
+    }
+    Write-Ok "Resource group:  $ResourceGroup"
+    Write-Ok "Location:        $Location"
+    Write-Ok "Bicep file:      $BicepFile"
+    Write-Ok "Parameters file: $ParametersFile"
+}
+
+# -- Build + publish --------------------------------------------------------
+function Invoke-Publish {
+    if ($SkipPublish) { Write-Warn2 'Skipping publish (-SkipPublish).'; return }
+    Write-Step 'Publishing 3 projects (Release) + zipping'
+    if (Test-Path $PublishDir) { Remove-Item $PublishDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $PublishDir | Out-Null
+    $projects = @(
+        @{ Name='web';  Csproj='src\Web\IntuneDeviceActions.Web.csproj'   }
+        @{ Name='proc'; Csproj='src\Proc\IntuneDeviceActions.Proc.csproj' }
+        @{ Name='wipe'; Csproj='src\Wipe\IntuneDeviceActions.Wipe.csproj' }
+    )
+    foreach ($p in $projects) {
+        $csproj = Join-Path $RepoRoot $p.Csproj
+        $outDir = Join-Path $PublishDir $p.Name
+        Write-Host "    -> dotnet publish $($p.Name)"
+        & dotnet publish $csproj -c Release -o $outDir --nologo -v minimal | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Publish failed for $($p.Csproj)" }
+        $zip = Join-Path $PublishDir "$($p.Name).zip"
+        Compress-Archive -Path (Join-Path $outDir '*') -DestinationPath $zip -Force
+        Write-Ok "$($p.Name).zip ($([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB)"
+    }
+}
+
+# -- Infra deploy -----------------------------------------------------------
+function Invoke-InfraDeploy {
+    if ($SkipInfra) { Write-Warn2 'Skipping infra deploy (-SkipInfra).'; return }
+    Write-Step "Bicep deploy -> $ResourceGroup ($Location)"
+    & az group create -n $ResourceGroup -l $Location --only-show-errors -o none
+    $deployName = "$NamePrefix-deploy-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
+    Write-Host "    deployment name: $deployName"
+    $state = & az deployment group create `
+        -g $ResourceGroup -n $deployName `
+        -f $BicepFile -p "@$ParametersFile" `
+        --query 'properties.provisioningState' -o tsv `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or $state -ne 'Succeeded') {
+        throw "Bicep deployment failed (state: $state). Run: az deployment group show -g $ResourceGroup -n $deployName"
+    }
+    Write-Ok "Infra deployed (state: $state)"
+}
+
+# -- Function-app lookup ---------------------------------------------------
+function Get-FunctionAppByRole($role) {
+    $name = & az functionapp list -g $ResourceGroup `
+        --query "[?starts_with(name, '$NamePrefix-$role-')].name | [0]" `
+        -o tsv --only-show-errors
+    if (-not $name) { return $null }
+    return $name.Trim()
+}
+
+# -- Zip deploy -------------------------------------------------------------
+function Invoke-ZipDeploy {
+    if ($SkipDeploy) { Write-Warn2 'Skipping zip deploy (-SkipDeploy).'; return }
+    $apps = @{}
+    foreach ($role in 'web','proc','wipe') {
+        $a = Get-FunctionAppByRole $role
+        if (-not $a) { throw "No Function App found with prefix '$NamePrefix-$role-' in $ResourceGroup." }
+        $apps[$role] = $a
+    }
+    Write-Step 'Restarting Function Apps (RBAC propagation buffer)'
+    foreach ($role in 'web','proc','wipe') {
+        & az functionapp restart -g $ResourceGroup -n $apps[$role] --only-show-errors -o none
+        Write-Ok "restarted $($apps[$role])"
+    }
+    Write-Host "    waiting 60s for restart + RBAC settle..."
+    Start-Sleep 60
+
+    Write-Step 'Deploying function zips'
+    foreach ($role in 'web','proc','wipe') {
+        $app = $apps[$role]
+        $zip = Join-Path $PublishDir "$role.zip"
+        if (-not (Test-Path $zip)) { throw "Missing zip: $zip (did you skip -SkipPublish?)" }
+        Write-Host "    -> $app  ($role.zip)"
+        & az functionapp deployment source config-zip `
+            -g $ResourceGroup -n $app --src $zip `
+            --only-show-errors -o none
+        if ($LASTEXITCODE -ne 0) { throw "Zip deploy failed for $app" }
+        Write-Ok "$app  deployed"
+    }
+}
+
+# -- Smoke test ------------------------------------------------------------
+function Invoke-SmokeTest {
+    if ($NoSmokeTest) { return }
+    Write-Step 'Smoke test'
+    $webApp  = Get-FunctionAppByRole 'web'
+    $webHost = (& az functionapp show -g $ResourceGroup -n $webApp `
+        --query defaultHostName -o tsv --only-show-errors).Trim()
+    $url = "https://$webHost/api/actions/wipe"
+    Write-Host "    POST $url  (no client cert - expecting 401/403)"
+    try {
+        Invoke-WebRequest -Uri $url -Method POST -Body '{}' `
+            -ContentType 'application/json' -UseBasicParsing -TimeoutSec 30 | Out-Null
+        Write-Warn2 'Endpoint returned 2xx without a client cert - mTLS may NOT be enforced.'
+    } catch {
+        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        if ($code -in 401, 403) { Write-Ok "mTLS enforced (HTTP $code without client cert)" }
+        else { Write-Warn2 "Unexpected response: HTTP $code - verify manually." }
+    }
+    foreach ($role in 'proc','wipe') {
+        $app = Get-FunctionAppByRole $role
+        try {
+            $r = Invoke-WebRequest "https://$app.azurewebsites.net/" `
+                -UseBasicParsing -TimeoutSec 30
+            Write-Ok "$app warmup HTTP $($r.StatusCode)"
+        } catch {
+            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            Write-Warn2 "$app warmup HTTP $code - may still be cold-starting."
+        }
+    }
+}
+
+# -- Post-deploy reminders -------------------------------------------------
+function Show-PostDeployNotes {
+    $appcfg = & az appconfig list -g $ResourceGroup `
+        --query "[?starts_with(name, '$NamePrefix-appcfg')].name | [0]" `
+        -o tsv --only-show-errors
+    Write-Host ''
+    Write-Host '============ Manual post-deploy actions ============' -ForegroundColor Magenta
+    Write-Host ''
+    Write-Host '1) Grant Microsoft Graph admin consent to the User-Assigned MIs:' -ForegroundColor White
+    Write-Host '     - uamiWipe (privileged):' -ForegroundColor Gray
+    Write-Host '         DeviceManagementManagedDevices.PrivilegedOperations.All'
+    Write-Host '         DeviceManagementManagedDevices.Read.All'
+    Write-Host '         Device.Read.All'
+    Write-Host '         GroupMember.Read.All'
+    Write-Host '     - uami (status poller):' -ForegroundColor Gray
+    Write-Host '         DeviceManagementManagedDevices.Read.All'
+    Write-Host '   Use Entra portal -> Enterprise Applications -> search MI name -> Permissions -> Grant admin consent.'
+    Write-Host ''
+    if ($appcfg) {
+        Write-Host "2) (optional) Seed App Configuration ($appcfg) overrides:" -ForegroundColor White
+        Write-Host "     az appconfig kv set --auth-mode login -n $appcfg --key Sentinel --value (Get-Date -f s)"
+    }
+    Write-Host ''
+    Write-Host '3) Verify the client certificate / CA chain in main.parameters.json is still valid.' -ForegroundColor White
+    Write-Host '   (clientCertCaChainBase64, clientCertThumbprintToDeviceMap)'
+    Write-Host ''
+    Write-Host '4) End-to-end test:' -ForegroundColor White
+    $webApp  = Get-FunctionAppByRole 'web'
+    if ($webApp) {
+        $webHost = (& az functionapp show -g $ResourceGroup -n $webApp `
+            --query defaultHostName -o tsv --only-show-errors).Trim()
+        Write-Host "     client\Invoke-DeviceWipe.ps1 -ApiUrl https://$webHost/api/actions/wipe ..." -ForegroundColor Gray
+    }
+    Write-Host ''
+    Write-Host '====================================================' -ForegroundColor Magenta
+}
+
+# -- Main ------------------------------------------------------------------
+try {
+    Write-Host ''
+    Write-Host '+----------------------------------------------+' -ForegroundColor White
+    Write-Host '|  IntuneDeviceActions  -  end-to-end deploy   |' -ForegroundColor White
+    Write-Host '+----------------------------------------------+' -ForegroundColor White
+
+    if ($SkipPrereqInstall) {
+        Write-Warn2 '-SkipPrereqInstall set; assuming dotnet/az/bicep are present.'
+    } else {
+        Confirm-DotNet10
+        Confirm-AzCli
+        Confirm-Bicep
+    }
+    Confirm-AzLogin
+    Resolve-Inputs
+    Invoke-Publish
+    Invoke-InfraDeploy
+    Invoke-ZipDeploy
+    Invoke-SmokeTest
+    Show-PostDeployNotes
+
+    Write-Host ''
+    Write-Host '*  Deploy completed.' -ForegroundColor Green
+} catch {
+    Write-Host ''
+    Write-Err $_.Exception.Message
+    if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
+    exit 1
+}
