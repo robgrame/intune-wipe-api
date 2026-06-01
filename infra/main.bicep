@@ -99,6 +99,9 @@ param actionStatusTableName string = 'actionstatus'
 @description('NCRONTAB expression for the action status poller. Default: every 2 minutes.')
 param actionStatusPollerCron string = '0 */2 * * * *'
 
+@description('Max age (hours) of action-status rows the poller will still consider. Rows older than this with non-terminal state are flipped to action.poll-timeout. Defaults to 24 (one full day after request).')
+param actionStatusPollMaxAgeHours int = 24
+
 // ── Idempotency ledger ───────────────────────────────────────────────────────
 @description('Max wipes per device per 24h. Hard ceiling enforced by the ledger.')
 param idempotencyMaxWipesPerDay int = 5
@@ -271,7 +274,11 @@ resource sbNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
 }
 
 // Conservative defaults: TTL 1 day, 5 deliveries before DLQ, 5-minute lock.
-// No sessions, no duplicate-detection (we use idempotency ledger instead).
+// No sessions. requiresDuplicateDetection=false is INTENTIONAL: producers set
+// MessageId=correlationId for diagnostic traceability and SB-native correlation,
+// NOT for idempotency. Idempotency is enforced by the IdempotencyService blob
+// ledger. Enabling dedup here would silently swallow legitimate retries that
+// reuse the same correlationId (replay, lock-expiry redelivery, etc.).
 resource sbQueueActionRequests 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
   parent: sbNamespace
   name: actionRequestsQueueName
@@ -417,6 +424,18 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
       ]
     }
   }
+  // Force role assignments to be created (and start propagating) BEFORE the
+  // Function App is provisioned. Mitigates the cold-boot RBAC race where the
+  // app tries to read AppConfig / send to SB before its UAMI has the role.
+  // NOTE: still pair with a 60-120s wait + app restart in Phase D.
+  dependsOn: [
+    raWebBlob
+    raWebTable
+    raWebTableOnProc
+    raWebLedger
+    raWebSbSendRequests
+    raAppConfigWeb
+  ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -477,6 +496,7 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ServiceBus__ActionDispatchQueue',     value: actionDispatchQueueName }
         { name: 'ServiceBus__WipeActionQueue',         value: wipeActionQueueName }
         { name: 'ActionStatus__TableName',             value: actionStatusTableName }
+        { name: 'ActionStatus__PollMaxAgeHours',       value: string(actionStatusPollMaxAgeHours) }
         { name: 'ActionStatusPoller__CronExpression',  value: actionStatusPollerCron }
         // Idempotency ledger (Proc reads/queries but does NOT reserve here).
         { name: 'Idempotency__BlobContainer',           value: ledgerContainerName }
@@ -497,6 +517,20 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
       ]
     }
   }
+  // Same RBAC race mitigation as funcWeb. Proc needs Blob/Queue/Table on its
+  // own storage, SB receiver+sender on 3 queues, AppConfig reader, and the
+  // Flex deployment-container Blob role before its first cold start.
+  dependsOn: [
+    raProcBlob
+    raProcQueue
+    raProcTable
+    raProcSbRecvRequests
+    raProcSbSendDispatch
+    raProcSbRecvDispatch
+    raProcSbSendWipe
+    raProcDeploy
+    raAppConfigProc
+  ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -568,7 +602,8 @@ resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
         // Audit + action status tables shared.
         { name: 'Audit__StorageAccount',   value: storageProc.name }
         { name: 'Audit__TableName',        value: auditTableName }
-        { name: 'ActionStatus__TableName', value: actionStatusTableName }
+        { name: 'ActionStatus__TableName',   value: actionStatusTableName }
+        { name: 'ActionStatus__PollMaxAgeHours', value: string(actionStatusPollMaxAgeHours) }
         // Microsoft Graph wipe call (privileged).
         { name: 'Graph__TenantId',                value: graphTenantId }
         { name: 'Graph__ManagedIdentityClientId', value: uamiWipe.properties.clientId }
@@ -578,6 +613,19 @@ resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
       ]
     }
   }
+  // Same RBAC race mitigation. Wipe needs Blob/Table on its own storage,
+  // Blob Owner on the ledger container (Reserve/MarkIssued writes), Table
+  // contributor on storageProc (action-status table is on Proc storage), SB
+  // receiver on wipe-action, AppConfig reader, and Flex deployment container.
+  dependsOn: [
+    raWipeBlob
+    raWipeTable
+    raWipeLedger
+    raWipeTableOnProc
+    raWipeSbRecv
+    raWipeDeploy
+    raAppConfigWipe
+  ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

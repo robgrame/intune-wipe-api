@@ -103,7 +103,7 @@ function Get-ClientCertificate {
 
 function Get-StatusUrl {
     param([string]$ApiUrl, [string]$CorrelationId)
-    # Config stores the wipe endpoint (e.g. https://host/api/wipe). We just
+    # Config stores the wipe endpoint (e.g. https://host/api/actions/wipe). We just
     # need to append /status/{id} regardless of any trailing slash.
     $trimmed = $ApiUrl.TrimEnd('/')
     return ("{0}/status/{1}" -f $trimmed, $CorrelationId)

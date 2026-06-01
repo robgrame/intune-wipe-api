@@ -220,7 +220,9 @@ public sealed class ActionRequestFunction
         sbMessage.ApplicationProperties["actionType"] = "wipe";
         sbMessage.ApplicationProperties["entraDeviceId"] = msg.EntraDeviceId;
         sbMessage.ApplicationProperties["intuneDeviceId"] = msg.IntuneDeviceId;
-        if (forceRearm) sbMessage.ApplicationProperties["forceRearm"] = true;
+        // forceRearm intentionally NOT mirrored as an ApplicationProperty —
+        // it lives ONLY in the JSON body so consumers have a single source of
+        // truth. Mirroring would invite drift.
         await _sender.Sender.SendMessageAsync(sbMessage, ct);
         _log.LogDebug("Action request published: corr={Corr} device={Device} entra={Entra} intune={Intune} forceRearm={Force} queue={Queue}",
             correlationId, msg.DeviceName, msg.EntraDeviceId, msg.IntuneDeviceId, forceRearm, _sender.Sender.EntityPath);

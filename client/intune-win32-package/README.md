@@ -31,7 +31,7 @@ produces `dist\IntuneWipeClient.intunewin`.
 
 ```powershell
 .\Publish-ToIntune.ps1 `
-    -ApiUrl      "https://intwipe-web-qupxwx6egkr3e.azurewebsites.net/api/wipe" `
+    -ApiUrl      "https://idactions-web-qupxwx6egkr3e.azurewebsites.net/api/actions/wipe" `
     -FunctionKey "<host key>" `
     -AssignToGroupId "<entra group object id>"   # optional
 ```

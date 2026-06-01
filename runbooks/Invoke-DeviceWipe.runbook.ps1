@@ -21,11 +21,11 @@
            DeviceManagementManagedDevices.Read.All
            GroupMember.Read.All
       3) Grant the Automation MI:
-           Blob Data Contributor on container 'wipe-ledger' (storageProc)
-           Table Data Contributor on storageProc (audit + wipestatus tables)
+           Blob Data Contributor on container 'action-ledger' (storageProc)
+           Table Data Contributor on storageProc (audit + actionstatus tables)
       4) Import this runbook (RunbookType: PowerShell72), publish.
       5) Create a webhook bound to this runbook (1-year expiry).
-      6) Set on intwipe-proc app:  WipeRunbookWebhook__Url = <webhook-uri>
+      6) Set on idactions-proc app:  WipeRunbookWebhook__Url = <webhook-uri>
          (Implementation note: a parallel WipeForwardingRunner variant could
          POST to that webhook instead of enqueuing to wipe-action; left as a
          documented hook to keep the default deploy lean.)
@@ -61,8 +61,8 @@ Set-StrictMode -Version Latest
 
 # ─── Configuration (override via Automation variables if needed) ────────────
 $GraphApi              = 'https://graph.microsoft.com/v1.0'
-$LedgerStorageAccount  = Get-AutomationVariable -Name 'LedgerStorageAccount'     # e.g. intwipestpqupxwx6egkr3e
-$LedgerContainer       = Get-AutomationVariable -Name 'LedgerContainer'          # 'wipe-ledger'
+$LedgerStorageAccount  = Get-AutomationVariable -Name 'LedgerStorageAccount'     # e.g. idactionsstpqupxwx6egkr3e
+$LedgerContainer       = Get-AutomationVariable -Name 'LedgerContainer'          # 'action-ledger'
 $AuditStorageAccount   = Get-AutomationVariable -Name 'AuditStorageAccount'      # same as ledger
 $AuditTableName        = Get-AutomationVariable -Name 'AuditTableName'           # 'auditevents'
 $KeepEnrollmentData    = [bool](Get-AutomationVariable -Name 'KeepEnrollmentData')

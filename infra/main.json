@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "8382759486509864051"
+      "templateHash": "2264094958632659046"
     }
   },
   "parameters": {
@@ -184,6 +184,13 @@
       "defaultValue": "0 */2 * * * *",
       "metadata": {
         "description": "NCRONTAB expression for the action status poller. Default: every 2 minutes."
+      }
+    },
+    "actionStatusPollMaxAgeHours": {
+      "type": "int",
+      "defaultValue": 24,
+      "metadata": {
+        "description": "Max age (hours) of action-status rows the poller will still consider. Rows older than this with non-terminal state are flipped to action.poll-timeout. Defaults to 24 (one full day after request)."
       }
     },
     "idempotencyMaxWipesPerDay": {
@@ -729,6 +736,12 @@
         "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
         "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('planWebName'))]",
+        "[extensionResourceId(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'appcfg-reader'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'blob'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'blob-ledger'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'sb-send'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWebName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'table'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'table-audit'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
@@ -836,6 +849,10 @@
               "value": "[parameters('actionStatusTableName')]"
             },
             {
+              "name": "ActionStatus__PollMaxAgeHours",
+              "value": "[string(parameters('actionStatusPollMaxAgeHours'))]"
+            },
+            {
               "name": "ActionStatusPoller__CronExpression",
               "value": "[parameters('actionStatusPollerCron')]"
             },
@@ -898,6 +915,15 @@
         "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
         "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('planProcName'))]",
+        "[extensionResourceId(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'appcfg-reader'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'blob'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', variables('procDeployContainer')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', variables('procDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'flex-deploy'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'queue'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'table'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
@@ -1028,6 +1054,10 @@
               "value": "[parameters('actionStatusTableName')]"
             },
             {
+              "name": "ActionStatus__PollMaxAgeHours",
+              "value": "[string(parameters('actionStatusPollMaxAgeHours'))]"
+            },
+            {
               "name": "Graph__TenantId",
               "value": "[parameters('graphTenantId')]"
             },
@@ -1054,6 +1084,13 @@
         "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
         "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('planWipeName'))]",
+        "[extensionResourceId(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'appcfg-reader'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'blob'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stWipeName'), 'default', variables('wipeDeployContainer')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stWipeName'), 'default', variables('wipeDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'flex-deploy'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'blob-ledger'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'table'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'table-shared'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
