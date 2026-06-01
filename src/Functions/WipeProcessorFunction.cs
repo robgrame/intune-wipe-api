@@ -3,6 +3,7 @@ using IntuneWipeApi.Actions;
 using IntuneWipeApi.Models;
 using IntuneWipeApi.Services;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace IntuneWipeApi.Functions;
@@ -30,17 +31,25 @@ namespace IntuneWipeApi.Functions;
 /// </remarks>
 public sealed class WipeProcessorFunction
 {
-    private const string WipeActionType = "wipe";
+    private const string DefaultWipeActionType = "wipe";
 
     private readonly ActionDispatchEnqueuer _enqueuer;
     private readonly AuditService _audit;
     private readonly ILogger<WipeProcessorFunction> _log;
+    private readonly string _actionType;
 
-    public WipeProcessorFunction(ActionDispatchEnqueuer enqueuer, AuditService audit, ILogger<WipeProcessorFunction> log)
+    public WipeProcessorFunction(ActionDispatchEnqueuer enqueuer, AuditService audit,
+        IConfiguration cfg, ILogger<WipeProcessorFunction> log)
     {
         _enqueuer = enqueuer;
         _audit = audit;
         _log = log;
+        // Config-driven routing: setting Wipe:ActionType="wipe-runbook" flips
+        // the entire wipe pipeline to the Automation runbook executor without
+        // any code change. Default keeps the canonical Function-App path.
+        _actionType = string.IsNullOrWhiteSpace(cfg["Wipe:ActionType"])
+            ? DefaultWipeActionType
+            : cfg["Wipe:ActionType"]!.Trim();
     }
 
     [Function("WipeProcessor")]
@@ -78,7 +87,7 @@ public sealed class WipeProcessorFunction
         var envelope = new ActionDispatchMessage
         {
             SchemaVersion   = "1",
-            ActionType      = WipeActionType,
+            ActionType      = _actionType,
             CorrelationId   = msg.CorrelationId,
             DeviceName      = msg.DeviceName,
             EntraDeviceId   = msg.EntraDeviceId,

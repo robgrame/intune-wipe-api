@@ -230,10 +230,13 @@ var host = new HostBuilder()
         }
         else if (string.Equals(role, AppRoleGuard.Proc, StringComparison.OrdinalIgnoreCase))
         {
-            // On the worker app: register only the forwarder for the "wipe"
-            // ActionType. The real runner code never loads here and the worker
-            // identity does not need privileged Graph permissions.
+            // On the worker app: register both forwarders. The dispatcher
+            // resolves the right one for each envelope by ActionType:
+            //   "wipe"         → WipeForwardingRunner          → wipe-action queue → WipeActionConsumerFunction (dotnet)
+            //   "wipe-runbook" → WipeRunbookForwardingRunner   → Automation webhook → Invoke-DeviceWipe (PowerShell72)
+            // Same input envelope, two runtimes — proof of the plug-in model.
             services.AddSingleton<IActionRunner, WipeForwardingRunner>();
+            services.AddSingleton<IActionRunner, WipeRunbookForwardingRunner>();
         }
         // On web (or unset role) no runner is registered — the dispatch
         // function is disabled there anyway.

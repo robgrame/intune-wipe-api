@@ -16,3 +16,4 @@ publish-out/
 src/package.zip
 
 artifact.zip
+.webhook-uri.txt
