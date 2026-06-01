@@ -25,58 +25,78 @@
 ## Architettura
 
 <p align="center">
-  <img src="docs/architecture.png" alt="Wipe request workflow: PS 5.1 client → mTLS → WipeRequest HTTP function → Storage Queue → WipeProcessor queue trigger → Microsoft Graph (resolve device, check member groups, verify ownership, POST /wipe)" width="640" />
+  <img src="docs/architecture.png" alt="Wipe request workflow: PS 5.1 client → mTLS → WipeRequest HTTP function (Web app) → wipe-requests queue → WipeProcessor dispatcher (Proc) → action-dispatch queue → ActionDispatch router → WipeForwardingRunner → wipe-action queue → WipeAction consumer (Wipe app, privileged Graph identity) → Microsoft Graph wipe" width="640" />
 </p>
 
 L'endpoint pubblico fa **solo** validazione (certificato + payload) e
-accodamento. L'esecuzione effettiva avviene in un secondo processo,
-disaccoppiato e ritentabile, che applica i controlli di autorizzazione
-e chiama Microsoft Graph.
+accodamento. L'esecuzione effettiva del wipe avviene su una **terza Function
+App dedicata e privilegiata**, disaccoppiata e ritentabile, raggiunta tramite
+un router plug-in. La soluzione è organizzata in **tre Function App** (`Web`,
+`Proc`, `Wipe`) più una libreria condivisa (`Shared`), con identità, storage,
+App Service Plan e permessi separati per ciascun ruolo.
 
 ## Componenti
 
-| # | Componente | Ruolo |
-|---|---|---|
-| 1 | **`Invoke-DeviceWipe.ps1`** (PowerShell 5.1) | Raccoglie identità device, mostra UI WinForms di conferma (irreversibilità + ~90 min di indisponibilità + parola `WIPE` da digitare), invoca l'API in mTLS con timestamp + nonce anti-replay. |
-| 2 | **`WipeRequest`** (HTTP Function) | Valida headers anti-replay, valida cert client (X509 chain + EKU + CRL opzionale), verifica binding cert↔device, valida payload, accoda messaggio, risponde `202 Accepted` con `correlationId`. |
-| 3 | **Azure Storage Queue** `wipe-requests` | Disaccoppia ricezione ed esecuzione; retry automatici, dead-letter su `wipe-requests-poison`. |
-| 4 | **`WipeProcessor`** (Queue trigger, non esposta) | **Dispatcher sottile**: valida formato + app role, traduce il messaggio in un `ActionDispatchMessage{ActionType="wipe"}` e lo accoda su `action-dispatch`. Nessuna logica di business: gli step di wipe vivono dentro `WipeActionRunner`. |
-| 4b | **Azure Storage Queue** `action-dispatch` | Coda del router plug-in. Decouple il dispatcher dai runner concreti; nuove capability (lock, BitLocker rotate, ...) si aggiungono come nuovo `IActionRunner` senza toccare HTTP, queue o dispatcher. |
-| 4c | **`ActionDispatch`** (Queue trigger, non esposta) | **Router** plug-in: deserializza la busta, risolve l'`IActionRunner` per `ActionType` via `ActionRunnerRegistry`, esegue. Onorare `FailOnError` per la retry policy della coda. |
-| 4d | **`WipeActionRunner`** (`IActionRunner`, Type="wipe") | Logica wipe: risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`, inizializza status tracker, esegue nudges (sync + reboot) best-effort. |
-| 5 | **Blob `wipe-ledger`** | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche a fronte di retry queue at-least-once. |
-| 6 | **Due User-Assigned Managed Identity** | `uami-web` (Function App pubblica) ha **solo** `Storage Queue Data Message Sender` sulla coda — niente Graph. `uami` (worker) ha `Storage Blob Data Owner` + `Storage Queue Data Contributor` + i consent Microsoft Graph. Anche se la superficie pubblica venisse compromessa, l'attaccante non può pilotare il wipe via Graph. |
-| 7 | **Application Insights** | Audit completo con `correlationId`. |
+| # | Componente | App | Ruolo |
+|---|---|---|---|
+| 1 | **`Invoke-DeviceWipe.ps1`** (PowerShell 5.1) | client | Raccoglie identità device, mostra UI WinForms di conferma (irreversibilità + ~90 min di indisponibilità + parola `WIPE` da digitare), invoca l'API in mTLS con timestamp + nonce anti-replay. |
+| 2 | **`WipeRequest`** (HTTP Function) | **Web** | Valida headers anti-replay, valida cert client (X509 chain + EKU + CRL opzionale), verifica binding cert↔device, valida payload, accoda messaggio, risponde `202 Accepted` con `correlationId`. |
+| 3 | **Azure Storage Queue** `wipe-requests` | Web→Proc | Disaccoppia ricezione ed esecuzione; retry automatici, dead-letter su `wipe-requests-poison`. |
+| 4 | **`WipeProcessor`** (Queue trigger, non esposta) | **Proc** | **Dispatcher sottile**: valida formato + app role, traduce il messaggio in un `ActionDispatchMessage{ActionType="wipe"}` e lo accoda su `action-dispatch`. Nessuna logica di business. |
+| 4b | **Azure Storage Queue** `action-dispatch` | Proc | Coda del router plug-in. Decouple il dispatcher dai runner concreti; nuove capability (lock, BitLocker rotate, ...) si aggiungono come nuovo `IActionRunner` senza toccare HTTP, queue o dispatcher. |
+| 4c | **`ActionDispatch`** (Queue trigger, non esposta) | **Proc** | **Router** plug-in: deserializza la busta, risolve l'`IActionRunner` per `ActionType` via `ActionRunnerRegistry`, esegue. Onorare `FailOnError` per la retry policy della coda. |
+| 4d | **`WipeForwardingRunner`** (`IActionRunner`, Type="wipe") | **Proc** | Runner non privilegiato: **inoltra** la busta sulla coda `wipe-action`. Il Proc non chiama Graph né tocca il ledger. |
+| 4e | **`WipeRunbookForwardingRunner`** (`IActionRunner`, Type="wipe-runbook") | **Proc** | Variante demo del modello plug-in: invece di accodare, fa `POST` su un webhook **Azure Automation** (runbook PowerShell 7.2 `Invoke-DeviceWipe`). Stesso contratto, runtime diverso. |
+| 4f | **Azure Storage Queue** `wipe-action` | Proc→Wipe | Coda per-capability che consegna la busta alla sola app privilegiata. |
+| 4g | **`WipeAction`** (Queue trigger, non esposta) | **Wipe** | Consumer dedicato che risolve direttamente `WipeActionRunner`. È l'unica function deployata sull'app privilegiata. |
+| 4h | **`WipeActionRunner`** (`IActionRunner`, Type="wipe") | **Wipe** | Logica wipe vera: risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`, inizializza status tracker, esegue nudges (sync + reboot) best-effort. |
+| 5 | **Blob `wipe-ledger`** | Wipe/Proc | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche a fronte di retry queue at-least-once. |
+| 6a | **`WipeStatus`** (HTTP Function) | **Web** | `GET /api/wipe/status` — in mTLS, ritorna lo stato di un wipe (proiezione della tabella `wipestatus`). Binding cert↔device anti-IDOR: un device non può leggere l'esito di un altro. |
+| 6b | **`WipeStatusPoller`** (Timer trigger) | **Proc** | Poller schedulato che interroga Graph per l'`actionState` dei wipe non terminali e aggiorna la tabella `wipestatus` + audit. |
+| 6c | **`WipeLedgerAdmin`** (HTTP Function) | **Web** | Endpoint SecOps `GET`/`POST /api/wipe-ledger/{intuneDeviceId}[/reset]` per ispezionare/resettare il ledger. Gated da `Idempotency:AdminApiEnabled` (off di default). |
+| 7 | **Tre User-Assigned Managed Identity** | — | `uami-web` (no Graph privilegiato), `uami` (worker/proc, no Graph privilegiato), `uami-wipe` (l'unica con i consent Graph distruttivi). Vedi [Isolamento](#isolamento-delle-tre-function-app). |
+| 8 | **Azure App Configuration** | tutte | Store centralizzato delle impostazioni con refresh sentinel; ogni app lo legge via `AppConfigRefreshMiddleware` con `roleHint` (`web`/`proc`/`wipe`). |
+| 9 | **Application Insights + tabella `auditevents`** | tutte | Audit dual-write: `customEvents` (non-sampled) + Azure Table durabile, entrambi con `correlationId`. |
 
 ### Architettura plug-in (router + runner)
 
 ```text
-HTTP / mTLS  ──▶  WipeRequest  ──▶  [wipe-requests]  ──▶  WipeProcessor (DISPATCHER)
-                                                                  │ enqueue ActionDispatchMessage{type="wipe"}
-                                                                  ▼
-                                                          [action-dispatch]
-                                                                  │
-                                                                  ▼
-                                                          ActionDispatch (ROUTER)
-                                                                  │ ActionRunnerRegistry.Resolve(type)
-                                                                  ▼
-                                                          ┌────────────────────────┐
-                                                          │ WipeActionRunner       │  Type="wipe"        (built-in)
-                                                          │ LockActionRunner       │  Type="lock"        (futuro)
-                                                          │ BitLockerRotateRunner  │  Type="bitlocker"   (futuro)
-                                                          └────────────────────────┘
-                                                                 ▲
-                                                                 │ aggiungi qui per nuove capability
+HTTP / mTLS  ──▶  WipeRequest        ──▶  [wipe-requests]  ──▶  WipeProcessor (DISPATCHER)
+   (Web app)        (Web app)                                       (Proc app)
+                                                                       │ enqueue ActionDispatchMessage{type="wipe"}
+                                                                       ▼
+                                                               [action-dispatch]
+                                                                       │
+                                                                       ▼
+                                                               ActionDispatch (ROUTER, Proc app)
+                                                                       │ ActionRunnerRegistry.Resolve(type)
+                                                                       ▼
+                              ┌──────────────────────────────────────────────────────────────┐
+                              │ WipeForwardingRunner        type="wipe"          (built-in)   │
+                              │   └─▶ [wipe-action] ─▶ WipeAction ─▶ WipeActionRunner          │
+                              │                         (Wipe app, PRIVILEGED Graph identity)  │
+                              │ WipeRunbookForwardingRunner type="wipe-runbook"  (demo variant)│
+                              │   └─▶ POST webhook ─▶ Azure Automation runbook (PowerShell 7.2)│
+                              │ LockActionRunner            type="lock"          (futuro)      │
+                              │ BitLockerRotateRunner       type="bitlocker"     (futuro)      │
+                              └──────────────────────────────────────────────────────────────┘
+                                                                      ▲
+                                                                      │ aggiungi qui per nuove capability
 ```
 
-Le risorse **CORE** (HTTP function, queue `wipe-requests`/`action-dispatch`,
-`WipeProcessor`, `ActionDispatch`) non vanno mai modificate per aggiungere
-una nuova capability: il contratto è la busta `ActionDispatchMessage` e
+Il `WipeProcessor`/`ActionDispatch` (Proc) **non** chiamano mai Microsoft
+Graph né toccano il ledger di idempotenza: si limitano a instradare. La logica
+distruttiva e l'identità Graph privilegiata vivono **solo** sulla `Wipe`
+Function App, dietro la coda per-capability `wipe-action`.
+
+Le risorse **CORE** (HTTP function, queue `wipe-requests`/`action-dispatch`/`wipe-action`,
+`WipeProcessor`, `ActionDispatch`, `WipeAction`) non vanno mai modificate per
+aggiungere una nuova capability: il contratto è la busta `ActionDispatchMessage` e
 l'interfaccia `IActionRunner`.
 
 #### Aggiungere un nuovo action runner
 
-1. Crea una classe in `src/Actions/Runners/` che implementa `IActionRunner`:
+1. Crea una classe in `src/Shared/Actions/Runners/` che implementa `IActionRunner`:
    ```csharp
    public sealed class LockActionRunner : IActionRunner
    {
@@ -88,7 +108,9 @@ l'interfaccia `IActionRunner`.
        }
    }
    ```
-2. Registralo in `Program.cs`:
+2. Registralo nel `Program.cs` dell'app appropriata (`Proc` per un runner che gira
+   inline nel router, oppure su un'app dedicata sul modello `Wipe` se serve un
+   privilege boundary):
    ```csharp
    services.AddSingleton<IActionRunner, LockActionRunner>();
    ```
@@ -102,30 +124,35 @@ Nessuna modifica a `WipeRequestFunction`, `WipeProcessorFunction`,
 `action.dispatch.runner-failed`, `action.dispatch.no-runner`,
 `action.dispatch.invalid-envelope`.
 
-### Isolamento delle due Function App
+### Isolamento delle tre Function App
 
-L'API HTTP pubblica e il worker che chiama Microsoft Graph girano in **due
-Function App distinte** (`*-web-*` e `*-proc-*`) su **due App Service Plan
-Linux EP1 separati** (`*-plan-web-*` e `*-plan-proc-*`), con identità,
-permessi, **storage account separati** e configurazione separata.
-Stesso pacchetto deployato su entrambe: i due setting
-`AzureWebJobs.WipeProcessor.Disabled=1` (web) e
-`AzureWebJobs.WipeRequest.Disabled=1` (worker), più il guard in-code
-`AppRoleGuard` (legge `App__Role`), selezionano quale function è attiva
-su quale app. Risultato:
+L'API HTTP pubblica (`Web`), il dispatcher/router (`Proc`) e l'esecutore
+privilegiato del wipe (`Wipe`) girano in **tre Function App distinte**
+(`*-web-*`, `*-proc-*`, `*-wipe-*`) su **tre App Service Plan Linux EP1
+separati** (`*-plan-web-*`, `*-plan-proc-*`, `*-plan-wipe-*`), con identità
+(`uami-web`, `uami`, `uami-wipe`), permessi, **storage account separati**
+(`*stw*`, `*stp*`, `*stwipe*`) e configurazione separata. **Isolamento per
+artefatto**: ogni function class è compilata in un assembly diverso
+(`IntuneWipeApi.Web/Proc/Wipe`), quindi una function esiste fisicamente solo
+sull'app a cui appartiene. Il guard in-code `AppRoleGuard` (legge `App__Role`,
+impostato via `roleHint` su App Configuration) è un'ulteriore difesa
+fail-closed. Risultato:
 
-- La app pubblica scrive sul proprio `AzureWebJobsStorage` (`*stw*`) e non ha
-  alcun permesso sullo storage del worker (`*stp*`) tranne `Queue Data Message
-  Sender` **scoped sulla singola coda** `wipe-requests` — non può
-  leggere/cancellare messaggi, non può toccare il ledger di idempotenza,
-  non può sovrascrivere il pacchetto deployato del worker.
-- Il worker ha `Storage Blob Data Owner` + `Storage Queue Data Contributor`
-  solo sul proprio storage account.
-- I due plan separati significano **VM host distinti**: un eventuale escape
-  di sandbox / vulnerabilità host-level sulla superficie pubblica non vede
-  il processo del worker né il suo token UAMI cached in memoria.
+- La app pubblica (`Web`) scrive sul proprio `AzureWebJobsStorage` (`*stw*`) e
+  ha **solo** `Queue Data Message Sender` **scoped sulla singola coda**
+  `wipe-requests` dello storage del Proc — non può leggere/cancellare messaggi.
+- Il `Proc` instrada soltanto: ha i permessi sulle proprie code
+  (`action-dispatch`, `wipe-action` come sender) ma **non** ha l'identità Graph
+  privilegiata e non esegue il wipe.
+- Il **privilege boundary distruttivo** (consent `DeviceManagementManagedDevices.PrivilegedOperations.All`)
+  vive **solo** sull'identità `uami-wipe` della `Wipe` Function App, l'unica che
+  consuma la coda `wipe-action` e chiama l'API di wipe Graph.
+- I tre plan separati significano **VM host distinti**: un eventuale escape di
+  sandbox / vulnerabilità host-level su una superficie non vede i processi né i
+  token UAMI cached in memoria delle altre.
 - Anche se la superficie pubblica venisse compromessa, l'attaccante non può
-  pilotare Graph, manomettere il ledger, né iniettare codice nel worker.
+  pilotare Graph, manomettere il ledger, né iniettare codice nell'esecutore
+  privilegiato.
 
 ## Controlli di sicurezza in profondità
 
@@ -188,7 +215,7 @@ az deployment group create `
 
 > **Importante**: `trustedCaThumbprints` (o `trustedCaCertificatesBase64`) **deve** essere valorizzato: senza un trust anchor configurato la validazione cert fallisce in modo fail-closed.
 
-Output utili: `webAppName`, `webAppHostname`, `procAppName`, `procAppHostname`, `uamiWorkerPrincipalId`, `uamiWebPrincipalId`, `storageWebAccount`, `storageProcAccount`, `wipeQueueName`, `ledgerContainerName`.
+Output utili: `appConfigName`, `appConfigEndpoint`, `webAppName`, `webAppHostname`, `procAppName`, `procAppHostname`, `wipeAppName`, `wipeAppHostname`, `uamiWipePrincipalId`, `uamiWorkerPrincipalId`, `uamiWebPrincipalId`, `storageWebAccount`, `storageProcAccount`, `storageWipeAccount`, `wipeQueueName`, `wipeActionQueueName`, `ledgerContainerName`, `automationAccountName`, `runbookName`.
 
 ### 3. Concedi i permessi Graph alle Managed Identity
 
@@ -251,24 +278,23 @@ foreach ($a in ($assignments -split "`n" | Where-Object { $_ })) {
 }
 ```
 
-### 4. Pubblica il codice su entrambe le Function App
+### 4. Pubblica il codice sulle tre Function App
 
-Lo stesso pacchetto va su entrambe; i due `AzureWebJobs.*.Disabled` (settati
-dal Bicep) garantiscono che ciascuna app esegua solo la function di sua
-competenza.
+Ogni Function App ha il proprio assembly (`Web`, `Proc`, `Wipe`): pubblica e
+deploya ciascun progetto sull'app corrispondente.
 
 ```pwsh
 cd src
-dotnet publish -c Release -o ./publish
-Compress-Archive -Path ./publish/* -DestinationPath ./publish.zip -Force
-az functionapp deployment source config-zip `
-  -g rg-intwipe-dev -n <webAppName>  --src ./publish.zip
-az functionapp deployment source config-zip `
-  -g rg-intwipe-dev -n <procAppName> --src ./publish.zip
-
-# Verifica post-deploy che il selector sia attivo su entrambe le app
-az functionapp config appsettings list -g rg-intwipe-dev -n <webAppName>  --query "[?name=='AzureWebJobs.WipeProcessor.Disabled'].value" -o tsv
-az functionapp config appsettings list -g rg-intwipe-dev -n <procAppName> --query "[?name=='AzureWebJobs.WipeRequest.Disabled'].value"   -o tsv
+foreach ($p in @(
+  @{ proj = 'Web';  app = '<webAppName>'  },
+  @{ proj = 'Proc'; app = '<procAppName>' },
+  @{ proj = 'Wipe'; app = '<wipeAppName>' }
+)) {
+  dotnet publish "$($p.proj)/IntuneWipeApi.$($p.proj).csproj" -c Release -o "./publish-$($p.proj)"
+  Compress-Archive -Path "./publish-$($p.proj)/*" -DestinationPath "./publish-$($p.proj).zip" -Force
+  az functionapp deployment source config-zip `
+    -g rg-intwipe-dev -n $p.app --src "./publish-$($p.proj).zip"
+}
 ```
 
 ### 5. Aggiungi device al gruppo allow-list
@@ -350,13 +376,33 @@ Codici di errore:
 | 401 | Certificato client mancante o non valido |
 | 502 | Errore upstream Microsoft Graph (riconciliato via retry coda) |
 
+### `GET /api/wipe/status`
+
+Stato di un wipe precedentemente accodato (proiezione della tabella
+`wipestatus`, aggiornata dal poller). Stessi requisiti di auth di `POST /api/wipe`
+(mTLS + binding cert↔device): un device può leggere solo il proprio esito.
+Esiti possibili: `404` (nessuna riga), `401` (cert/binding), `403` (la riga
+appartiene a un altro device), `410` (chiamata sull'app sbagliata).
+
+### `GET` / `POST /api/wipe-ledger/{intuneDeviceId}[/reset]`
+
+Endpoint operativi SecOps per ispezionare e resettare manualmente il ledger di
+idempotenza (sblocco di un device quando un re-wipe è intenzionalmente bloccato).
+Solo sulla `Web` Function App, protetti da function key e disabilitati di default
+(`Idempotency:AdminApiEnabled=true` per abilitarli).
+
 ## Configurazione
 
-Tutte le impostazioni sono app settings della Function App:
+Tutte le impostazioni sono centralizzate in **Azure App Configuration** (lette
+da ogni app via `AppConfigRefreshMiddleware` con refresh sentinel) e possono
+essere override come app settings della singola Function App:
 
 | Setting | Default | Descrizione |
 |---|---|---|
-| `Queue__WipeQueueName` | `wipe-requests` | Nome coda |
+| `AppConfig__Endpoint` | _(da bicep)_ | Endpoint dell'Azure App Configuration store. Accesso via UAMI (`App Configuration Data Reader`), local auth disabilitato. |
+| `Queue__WipeQueueName` | `wipe-requests` | Nome coda HTTP→dispatcher |
+| `Actions__DispatchQueueName` | `action-dispatch` | Coda del router plug-in (Proc) |
+| `WipeAction__QueueName` | `wipe-action` | Coda per-capability che consegna alla `Wipe` app privilegiata |
 | `ClientCert__TrustedCaThumbprints` | _(vuoto)_ | CSV thumbprint root/intermediate CA che devono comparire nella chain. **Richiesto** (o almeno un cert in `TrustedRootCertificates`) |
 | `ClientCert__TrustedRootCertificates` | _(vuoto)_ | Base64 DER delle **ROOT CA** (self-signed). Caricate in `CustomTrustStore` come trust anchors. Separa con `|` `,` o `;`. |
 | `ClientCert__TrustedIntermediateCertificates` | _(vuoto)_ | Base64 DER delle **CA intermedie**. Caricate solo in `ExtraStore` (hint per la costruzione della catena, **non** trust anchor). |
@@ -378,6 +424,10 @@ Tutte le impostazioni sono app settings della Function App:
 | `Wipe__AllowedGroupId` | _(obbligatorio)_ | ObjectId gruppo Entra |
 | `Wipe__KeepEnrollmentData` | `false` | Mantiene enrollment Intune (Autopilot rimane registrato; il device si ri-enrolla senza factory-reset completo). **Utile in DEV** per evitare il provisioning Autopilot da zero ad ogni test. In `dev` corrente è impostato a `true`. |
 | `Wipe__KeepUserData` | `false` | Mantiene dati utente |
+| `WipeStatus__TableName` | `wipestatus` | Tabella di tracking dello stato wipe (alimenta `GET /api/wipe/status`) |
+| `WipeStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc) che riconcilia lo stato via Graph |
+| `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `wipe-ledger` admin (solo Web) |
+| `WipeRunbook__WebhookUrl` | _(vuoto)_ | Webhook del runbook Automation per la capability `wipe-runbook` (variante demo). Trattare come secret (Key Vault reference raccomandato). |
 | `Graph__TenantId` | tenant corrente | Tenant per i token Graph |
 | `Graph__ManagedIdentityClientId` | _(da bicep)_ | clientId della UAMI |
 
@@ -400,7 +450,7 @@ worker telemetry pipeline → `SamplingRatio = 1.0`, e `excludedTypes`
 include `Event;Exception` in `host.json`). I traces classici (`ILogger`)
 restano disponibili come mirror per i flussi locali.
 
-Convenzione nomi: `wipe.<area>.<esito>` (vedi `src/Services/AuditEvents.cs`).
+Convenzione nomi: `wipe.<area>.<esito>` (vedi `src/Shared/Services/AuditEvents.cs`).
 Ogni evento porta `correlationId`, `deviceName`, `entraDeviceId`,
 `intuneDeviceId` e — quando applicabile — `certThumbprint`, `reason`,
 `managedDeviceId`, `expectedRole`/`actualRole`.
@@ -434,7 +484,7 @@ customEvents
 > `wipe.denied.cert-device-mismatch`, `wipe.denied.not-in-allowed-group`,
 > `wipe.denied.ownership-mismatch`, `wipe.already-issued`,
 > `wipe.graph.issued`, `wipe.graph.failed-permanent`,
-> `wipe.graph.transient-error`. Lista completa in `Services/AuditEvents.cs`.
+> `wipe.graph.transient-error`. Lista completa in `Shared/Services/AuditEvents.cs`.
 
 ## Struttura del repository
 
@@ -442,24 +492,39 @@ customEvents
 .
 ├── azure.yaml                          # (opzionale) per azd
 ├── infra/
-│   ├── main.bicep                      # Function App, Storage+Queue, UAMI, AI, RBAC
+│   ├── main.bicep                      # 3 Function App + plan, 3 storage, 3 UAMI,
+│   │                                   #   queue, App Configuration, AI, RBAC, runbook
 │   └── main.parameters.json
-├── src/                                # .NET 10 isolated worker
-│   ├── Program.cs
-│   ├── Functions/
-│   │   ├── WipeRequestFunction.cs      # HTTP, valida + accoda
-│   │   └── WipeProcessorFunction.cs    # Queue trigger, esegue wipe
-│   ├── Services/
-│   │   ├── ClientCertValidator.cs
-│   │   └── GraphWipeService.cs
-│   └── Models/
-│       ├── WipeRequest.cs
-│       └── WipeQueueMessage.cs
+├── src/                                # .NET 10 isolated — soluzione multi-progetto
+│   ├── IntuneWipeApi.slnx
+│   ├── Shared/                         # libreria condivisa (logica + servizi)
+│   │   ├── HostBuilderExtensions.cs    # DI + App Configuration helpers
+│   │   ├── Actions/                    # modello plug-in: registry, envelope, runner
+│   │   │   ├── IActionRunner.cs
+│   │   │   ├── ActionRunnerRegistry.cs
+│   │   │   ├── ActionDispatch*.cs
+│   │   │   └── Runners/                # WipeActionRunner, *ForwardingRunner
+│   │   ├── Services/                   # ClientCertValidator, GraphWipeService,
+│   │   │                               #   Idempotency, ReplayProtector, Audit*,
+│   │   │                               #   WipeStatusTracker, DeviceDirectoryResolver
+│   │   ├── Middleware/                 # AppConfigRefreshMiddleware
+│   │   └── Models/
+│   ├── Web/                            # App pubblica HTTP (mTLS)
+│   │   └── Functions/                  # WipeRequest, WipeStatus, WipeLedgerAdmin
+│   ├── Proc/                           # Dispatcher + router + status poller
+│   │   └── Functions/                  # WipeProcessor, ActionDispatch, WipeStatusPoller
+│   └── Wipe/                           # App privilegiata (esegue il wipe via Graph)
+│       └── Functions/                  # WipeAction (consumer wipe-action)
+├── runbooks/                           # variante Automation PowerShell 7.2
+│   ├── Invoke-DeviceWipe.runbook.ps1
+│   └── README.md
 ├── client/
 │   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint)
+│   ├── DeviceIdentity.psm1             # modulo identità device (Pester-tested)
 │   └── WipeConfirmationDialog.ps1      # WinForms dialog (shared module)
 └── docs/
     ├── architecture.png
+    ├── architectural-improvements.md   # review architetturale + roadmap
     ├── dialog-screenshot.png
     ├── Capture-DialogScreenshot.ps1    # rigenera lo screenshot del dialog
     └── Presentazione-Soluzione-Intune-Self-Wipe.eml
@@ -473,11 +538,20 @@ customEvents
 
 ## Roadmap
 
-- [ ] Validazione cert via `chain.Build()` con root CA pinning
+- [x] Validazione cert via `chain.Build()` con root CA pinning (`CustomTrustStore`)
+- [x] Split web/worker + esecutore privilegiato dedicato (3 Function App isolate)
+- [x] Modello plug-in `IActionRunner` (router + runner, variante runbook Automation)
+- [x] Configurazione centralizzata via Azure App Configuration
+- [x] Audit durabile dual-write (App Insights non-sampled + tabella `auditevents`)
+- [x] Endpoint `GET /api/wipe/status` per consultare lo stato + poller di riconciliazione
 - [ ] Notifica esito (Teams webhook / email) al termine del wipe
-- [ ] Endpoint `GET /api/wipe/{correlationId}` per consultare stato
-- [ ] APIM davanti alla Function con rate-limit per device
-- [ ] Workflow GitHub Actions per CI/CD
+- [ ] Rimozione della Function Key dal client (mTLS-only dietro APIM/App Gateway)
+- [ ] CA trust lifecycle via Key Vault references
+- [ ] APIM/App Gateway WAF davanti alla Function con rate-limit per device
+- [ ] Workflow GitHub Actions per CI/CD (con boundary checks post-deploy)
+
+> Dettaglio completo delle proposte architetturali in
+> [`docs/architectural-improvements.md`](docs/architectural-improvements.md).
 
 ## Licenza
 
