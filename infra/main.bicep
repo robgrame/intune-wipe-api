@@ -390,7 +390,6 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ServiceBus__fullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__credential',              value: 'managedidentity' }
         { name: 'ServiceBus__clientId',                value: uamiWeb.properties.clientId }
-        { name: 'ServiceBus__FullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__ActionRequestsQueue',     value: actionRequestsQueueName }
         // Audit + action status tables on the proc storage account.
         { name: 'Audit__StorageAccount',     value: storageProc.name }
@@ -491,7 +490,6 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ServiceBus__fullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__credential',              value: 'managedidentity' }
         { name: 'ServiceBus__clientId',                value: uami.properties.clientId }
-        { name: 'ServiceBus__FullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__ActionRequestsQueue',     value: actionRequestsQueueName }
         { name: 'ServiceBus__ActionDispatchQueue',     value: actionDispatchQueueName }
         { name: 'ServiceBus__WipeActionQueue',         value: wipeActionQueueName }
@@ -590,7 +588,6 @@ resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ServiceBus__fullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__credential',              value: 'managedidentity' }
         { name: 'ServiceBus__clientId',                value: uamiWipe.properties.clientId }
-        { name: 'ServiceBus__FullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
         { name: 'ServiceBus__WipeActionQueue',         value: wipeActionQueueName }
         // Idempotency ledger (Reserve/MarkIssued executed by WipeActionRunner here).
         { name: 'Idempotency__BlobContainer',           value: ledgerContainerName }
