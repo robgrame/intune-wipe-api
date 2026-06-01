@@ -43,7 +43,7 @@ public sealed class WipeActionConsumerFunction
 
     [Function("WipeAction")]
     public async Task Run(
-        [QueueTrigger("%WipeAction:QueueName%", Connection = "AzureWebJobsStorage")] string messageJson,
+        [ServiceBusTrigger("%ServiceBus:WipeActionQueue%", Connection = "ServiceBus")] string messageJson,
         CancellationToken ct)
     {
         ActionDispatchMessage env;

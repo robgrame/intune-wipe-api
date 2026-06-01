@@ -81,11 +81,11 @@ public sealed class RequestIntakeFunction
 
     [Function("RequestIntake")]
     public async Task Run(
-        [QueueTrigger("%Queue:WipeQueueName%", Connection = "AzureWebJobsStorage")] string messageJson,
+        [ServiceBusTrigger("%ServiceBus:ActionRequestsQueue%", Connection = "ServiceBus")] string messageJson,
         CancellationToken ct)
     {
         var msg = JsonSerializer.Deserialize<ActionRequestMessage>(messageJson)
-            ?? throw new InvalidOperationException("Empty/invalid queue payload");
+            ?? throw new InvalidOperationException("Empty/invalid Service Bus payload");
 
         using var scope = _log.BeginScope(new Dictionary<string, object>
         {

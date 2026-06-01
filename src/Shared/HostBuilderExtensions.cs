@@ -1,13 +1,14 @@
 using Azure.Core;
 using Azure.Data.Tables;
 using Azure.Identity;
+using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
-using Azure.Storage.Queues;
 using IntuneDeviceActions.Actions;
 using IntuneDeviceActions.Middleware;
 using IntuneDeviceActions.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 
@@ -216,99 +217,77 @@ public static class HostBuilderExtensions
     }
 
     /// <summary>
-    /// Sender-side <c>wipe-requests</c> queue client. Web app uses it to enqueue
-    /// the initial request; Proc app consumes it via QueueTrigger (no DI client needed there).
+    /// Registers a shared <see cref="ServiceBusClient"/> singleton, authenticated
+    /// via the host's <see cref="TokenCredential"/> against the namespace given
+    /// by <c>ServiceBus:FullyQualifiedNamespace</c> (e.g.
+    /// <c>idactions-sb-xxx.servicebus.windows.net</c>). Idempotent — safe to
+    /// call from multiple <c>AddXxxSender</c> helpers; only the first wins.
     /// </summary>
-    public static IServiceCollection AddActionRequestSender(this IServiceCollection services)
+    private static IServiceCollection EnsureServiceBusClient(this IServiceCollection services)
     {
-        services.AddSingleton(sp =>
+        services.TryAddSingleton(sp =>
         {
             var cfg = sp.GetRequiredService<IConfiguration>();
             var cred = sp.GetRequiredService<TokenCredential>();
-            var queueName = cfg["Queue:WipeQueueName"] ?? "wipe-requests";
-            var account = cfg["Queue:StorageAccount"]
-                ?? cfg["AzureWebJobsStorage__accountName"]
-                ?? cfg["Idempotency:StorageAccount"];
-            var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.None };
-            QueueClient client;
-            if (string.IsNullOrWhiteSpace(account))
-            {
-                client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
-                client.CreateIfNotExists();
-            }
-            else
-            {
-                client = new QueueClient(
-                    new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
-                    cred, options);
-            }
-            return client;
+            var ns = cfg["ServiceBus:FullyQualifiedNamespace"]
+                ?? throw new InvalidOperationException(
+                    "ServiceBus:FullyQualifiedNamespace must be configured (e.g. 'idactions-sb-xxx.servicebus.windows.net').");
+            return new ServiceBusClient(ns, cred);
         });
         return services;
     }
 
     /// <summary>
-    /// Sender-side <c>action-dispatch</c> queue client + ActionDispatchEnqueuer.
-    /// Used by Proc (WipeProcessor → enqueue) and Wipe is NOT a producer.
+    /// Sender-side <c>action-requests</c> Service Bus queue client. Web app uses
+    /// it to enqueue the initial request; Proc app consumes it via
+    /// <c>ServiceBusTrigger</c> (RequestIntakeFunction) — no DI sender needed there.
     /// </summary>
-    public static IServiceCollection AddActionDispatchSender(this IServiceCollection services)
+    public static IServiceCollection AddActionRequestSender(this IServiceCollection services)
     {
+        services.EnsureServiceBusClient();
         services.AddSingleton(sp =>
         {
             var cfg = sp.GetRequiredService<IConfiguration>();
-            var cred = sp.GetRequiredService<TokenCredential>();
-            var queueName = cfg["Actions:DispatchQueueName"] ?? "action-dispatch";
-            var account = cfg["Queue:StorageAccount"]
-                ?? cfg["AzureWebJobsStorage__accountName"]
-                ?? cfg["Idempotency:StorageAccount"];
-            var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
-            QueueClient client;
-            if (string.IsNullOrWhiteSpace(account))
-            {
-                client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
-                client.CreateIfNotExists();
-            }
-            else
-            {
-                client = new QueueClient(
-                    new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
-                    cred, options);
-            }
-            return new ActionDispatchSender(client);
+            var client = sp.GetRequiredService<ServiceBusClient>();
+            var queueName = cfg["ServiceBus:ActionRequestsQueue"] ?? "action-requests";
+            return new ActionRequestSender(client.CreateSender(queueName));
+        });
+        return services;
+    }
+
+    /// <summary>
+    /// Sender-side <c>action-dispatch</c> Service Bus queue client +
+    /// <see cref="ActionDispatchEnqueuer"/>. Used by Proc (RequestIntake →
+    /// ActionDispatch). Wipe is NOT a producer of this queue.
+    /// </summary>
+    public static IServiceCollection AddActionDispatchSender(this IServiceCollection services)
+    {
+        services.EnsureServiceBusClient();
+        services.AddSingleton(sp =>
+        {
+            var cfg = sp.GetRequiredService<IConfiguration>();
+            var client = sp.GetRequiredService<ServiceBusClient>();
+            var queueName = cfg["ServiceBus:ActionDispatchQueue"] ?? "action-dispatch";
+            return new ActionDispatchSender(client.CreateSender(queueName));
         });
         services.AddSingleton<ActionDispatchEnqueuer>();
         return services;
     }
 
     /// <summary>
-    /// Sender-side <c>wipe-action</c> queue client (envelope to dedicated runner).
-    /// Used by Proc (WipeForwardingRunner). The Wipe app consumes via QueueTrigger
-    /// (no DI client needed there).
+    /// Sender-side <c>wipe-action</c> Service Bus queue client (envelope to the
+    /// dedicated wipe-runner). Used by Proc (<c>WipeForwardingRunner</c>). The
+    /// Wipe app consumes via <c>ServiceBusTrigger</c> — no DI sender needed there.
     /// </summary>
     public static IServiceCollection AddWipeActionSender(this IServiceCollection services)
     {
+        services.EnsureServiceBusClient();
         services.AddSingleton(sp =>
         {
             var cfg = sp.GetRequiredService<IConfiguration>();
-            var cred = sp.GetRequiredService<TokenCredential>();
-            var queueName = cfg["WipeAction:QueueName"] ?? "wipe-action";
-            var account = cfg["Queue:StorageAccount"]
-                ?? cfg["AzureWebJobsStorage__accountName"]
-                ?? cfg["Idempotency:StorageAccount"];
-            var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
-            QueueClient client;
-            if (string.IsNullOrWhiteSpace(account))
-            {
-                client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
-                client.CreateIfNotExists();
-            }
-            else
-            {
-                client = new QueueClient(
-                    new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
-                    cred, options);
-            }
-            return new WipeActionSender(client);
+            var client = sp.GetRequiredService<ServiceBusClient>();
+            var queueName = cfg["ServiceBus:WipeActionQueue"] ?? "wipe-action";
+            return new WipeActionSender(client.CreateSender(queueName));
         });
         return services;
     }

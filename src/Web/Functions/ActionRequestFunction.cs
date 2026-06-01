@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
-using Azure.Storage.Queues;
+using Azure.Messaging.ServiceBus;
+using IntuneDeviceActions.Actions;
 using IntuneDeviceActions.Models;
 using IntuneDeviceActions.Services;
 using Microsoft.AspNetCore.Http;
@@ -13,24 +14,25 @@ namespace IntuneDeviceActions.Functions;
 
 /// <summary>
 /// Public HTTP endpoint: validates the client (cert + payload + replay headers + cert↔device binding)
-/// and enqueues a wipe request. All heavy lifting (group membership, Graph wipe) happens
-/// asynchronously in RequestIntakeFunction.
+/// and publishes an action request on the <c>action-requests</c> Service Bus
+/// queue. All heavy lifting (group membership, Graph wipe) happens
+/// asynchronously downstream (RequestIntakeFunction → ActionDispatch → WipeAction).
 /// </summary>
 public sealed class ActionRequestFunction
 {
     private readonly ClientCertValidator _cert;
     private readonly ReplayProtector _replay;
-    private readonly QueueClient _queue;
+    private readonly ActionRequestSender _sender;
     private readonly AuditService _audit;
     private readonly IConfiguration _cfg;
     private readonly ILogger<ActionRequestFunction> _log;
 
     public ActionRequestFunction(ClientCertValidator cert, ReplayProtector replay,
-        QueueClient queue, AuditService audit, IConfiguration cfg, ILogger<ActionRequestFunction> log)
+        ActionRequestSender sender, AuditService audit, IConfiguration cfg, ILogger<ActionRequestFunction> log)
     {
         _cert = cert;
         _replay = replay;
-        _queue = queue;
+        _sender = sender;
         _audit = audit;
         _cfg = cfg;
         _log = log;
@@ -209,9 +211,19 @@ public sealed class ActionRequestFunction
         };
 
         var payload = JsonSerializer.Serialize(msg);
-        await _queue.SendMessageAsync(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payload)), ct);
-        _log.LogDebug("Wipe request enqueued: corr={Corr} device={Device} entra={Entra} intune={Intune} forceRearm={Force} queue={Queue}",
-            correlationId, msg.DeviceName, msg.EntraDeviceId, msg.IntuneDeviceId, forceRearm, _queue.Name);
+        var sbMessage = new ServiceBusMessage(payload)
+        {
+            ContentType = "application/json",
+            MessageId = correlationId,
+            CorrelationId = correlationId,
+        };
+        sbMessage.ApplicationProperties["actionType"] = "wipe";
+        sbMessage.ApplicationProperties["entraDeviceId"] = msg.EntraDeviceId;
+        sbMessage.ApplicationProperties["intuneDeviceId"] = msg.IntuneDeviceId;
+        if (forceRearm) sbMessage.ApplicationProperties["forceRearm"] = true;
+        await _sender.Sender.SendMessageAsync(sbMessage, ct);
+        _log.LogDebug("Action request published: corr={Corr} device={Device} entra={Entra} intune={Intune} forceRearm={Force} queue={Queue}",
+            correlationId, msg.DeviceName, msg.EntraDeviceId, msg.IntuneDeviceId, forceRearm, _sender.Sender.EntityPath);
 
         var acceptProps = new Dictionary<string, string>
         {

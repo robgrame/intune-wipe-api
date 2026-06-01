@@ -14,5 +14,13 @@
       "Function": "Information",
       "IntuneDeviceActions": "Information"
     }
+  },
+  "extensions": {
+    "serviceBus": {
+      "maxConcurrentCalls": 4,
+      "prefetchCount": 0,
+      "autoCompleteMessages": true,
+      "maxAutoLockRenewalDuration": "00:10:00"
+    }
   }
 }

@@ -1,12 +1,14 @@
 using System.Text.Json;
+using Azure.Messaging.ServiceBus;
 using IntuneDeviceActions.Services;
 using Microsoft.Extensions.Logging;
 
 namespace IntuneDeviceActions.Actions;
 
 /// <summary>
-/// Producer-side helper that enqueues an <see cref="ActionDispatchMessage"/>
-/// on the storage queue consumed by <c>ActionDispatchFunction</c>.
+/// Producer-side helper that publishes an <see cref="ActionDispatchMessage"/>
+/// to the <c>action-dispatch</c> Service Bus queue consumed by
+/// <c>ActionDispatchFunction</c>.
 /// </summary>
 /// <remarks>
 /// Emits the <c>action.dispatch.enqueued</c> audit event so the full
@@ -14,7 +16,7 @@ namespace IntuneDeviceActions.Actions;
 /// </remarks>
 public sealed class ActionDispatchEnqueuer
 {
-    private readonly ActionDispatchSender _queue;
+    private readonly ActionDispatchSender _sender;
     private readonly AuditService _audit;
     private readonly ILogger<ActionDispatchEnqueuer> _log;
 
@@ -22,11 +24,11 @@ public sealed class ActionDispatchEnqueuer
     public static readonly JsonSerializerOptions JsonOptions = JsonOptionsInternal;
 
     public ActionDispatchEnqueuer(
-        ActionDispatchSender queue,
+        ActionDispatchSender sender,
         AuditService audit,
         ILogger<ActionDispatchEnqueuer> log)
     {
-        _queue = queue;
+        _sender = sender;
         _audit = audit;
         _log = log;
     }
@@ -40,7 +42,15 @@ public sealed class ActionDispatchEnqueuer
 
         message.DispatchedAt = DateTimeOffset.UtcNow;
         var json = JsonSerializer.Serialize(message, JsonOptions);
-        await _queue.Client.SendMessageAsync(json, cancellationToken: ct);
+        var sbMessage = new ServiceBusMessage(json)
+        {
+            ContentType = "application/json",
+            MessageId = message.CorrelationId,
+            CorrelationId = message.CorrelationId,
+        };
+        sbMessage.ApplicationProperties["actionType"] = message.ActionType;
+        sbMessage.ApplicationProperties["schemaVersion"] = message.SchemaVersion;
+        await _sender.Sender.SendMessageAsync(sbMessage, ct);
 
         _audit.TrackEvent(AuditEvents.ActionDispatchEnqueued, new Dictionary<string, string>
         {

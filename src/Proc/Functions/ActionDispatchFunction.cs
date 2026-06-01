@@ -39,7 +39,7 @@ public sealed class ActionDispatchFunction
 
     [Function("ActionDispatch")]
     public async Task Run(
-        [QueueTrigger("%Actions:DispatchQueueName%", Connection = "AzureWebJobsStorage")] string messageJson,
+        [ServiceBusTrigger("%ServiceBus:ActionDispatchQueue%", Connection = "ServiceBus")] string messageJson,
         CancellationToken ct)
     {
         ActionDispatchMessage env;

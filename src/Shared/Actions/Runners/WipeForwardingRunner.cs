@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Azure.Messaging.ServiceBus;
 using IntuneDeviceActions.Services;
 using Microsoft.Extensions.Logging;
 
@@ -7,8 +8,8 @@ namespace IntuneDeviceActions.Actions.Runners;
 /// <summary>
 /// <see cref="IActionRunner"/> registered on the worker role for the
 /// <c>wipe</c> action type. Instead of executing the wipe in-process, it
-/// forwards the dispatch envelope to a dedicated per-capability Storage Queue
-/// (<c>wipe-action</c>) which is consumed by a separate Function App
+/// forwards the dispatch envelope to a dedicated per-capability Service Bus
+/// queue (<c>wipe-action</c>) which is consumed by a separate Function App
 /// (<see cref="IntuneDeviceActions.Functions.WipeActionConsumerFunction"/>).
 /// </summary>
 /// <remarks>
@@ -24,16 +25,16 @@ public sealed class WipeForwardingRunner : IActionRunner
 {
     public string Type => "wipe";
 
-    private readonly WipeActionSender _queue;
+    private readonly WipeActionSender _sender;
     private readonly AuditService _audit;
     private readonly ILogger<WipeForwardingRunner> _log;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public WipeForwardingRunner(WipeActionSender queue, AuditService audit,
+    public WipeForwardingRunner(WipeActionSender sender, AuditService audit,
         ILogger<WipeForwardingRunner> log)
     {
-        _queue = queue;
+        _sender = sender;
         _audit = audit;
         _log = log;
     }
@@ -42,10 +43,19 @@ public sealed class WipeForwardingRunner : IActionRunner
     {
         var json = JsonSerializer.Serialize(envelope, JsonOptions);
         _log.LogDebug("WipeForwardingRunner sending envelope: corr={Corr} bytes={Bytes} queue={Queue}",
-            envelope.CorrelationId, System.Text.Encoding.UTF8.GetByteCount(json), _queue.Client.Name);
+            envelope.CorrelationId, System.Text.Encoding.UTF8.GetByteCount(json), _sender.Sender.EntityPath);
         if (_log.IsEnabled(LogLevel.Trace))
             _log.LogTrace("WipeForwardingRunner payload (Trace only): {Payload}", json);
-        await _queue.Client.SendMessageAsync(json, cancellationToken: ct);
+
+        var sbMessage = new ServiceBusMessage(json)
+        {
+            ContentType = "application/json",
+            MessageId = envelope.CorrelationId,
+            CorrelationId = envelope.CorrelationId,
+        };
+        sbMessage.ApplicationProperties["actionType"] = envelope.ActionType;
+        sbMessage.ApplicationProperties["schemaVersion"] = envelope.SchemaVersion;
+        await _sender.Sender.SendMessageAsync(sbMessage, ct);
 
         _audit.TrackEvent(AuditEvents.ActionForwarded, new Dictionary<string, string>
         {
@@ -54,12 +64,12 @@ public sealed class WipeForwardingRunner : IActionRunner
             [AuditEvents.Prop.DeviceName]     = envelope.DeviceName,
             [AuditEvents.Prop.EntraDeviceId]  = envelope.EntraDeviceId,
             [AuditEvents.Prop.IntuneDeviceId] = envelope.IntuneDeviceId,
-            ["targetQueue"]                   = _queue.Client.Name,
+            ["targetQueue"]                   = _sender.Sender.EntityPath,
             ["targetApp"]                     = "wipe-runner",
         });
 
         _log.LogInformation(
             "Forwarded action '{ActionType}' for {Device} to dedicated wipe-runner queue '{Queue}' (corr={Corr})",
-            envelope.ActionType, envelope.DeviceName, _queue.Client.Name, envelope.CorrelationId);
+            envelope.ActionType, envelope.DeviceName, _sender.Sender.EntityPath, envelope.CorrelationId);
     }
 }
