@@ -226,7 +226,11 @@ function Invoke-Publish {
         & dotnet publish $csproj -c Release -o $outDir --nologo -v minimal | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Publish failed for $($p.Csproj)" }
         $zip = Join-Path $PublishDir "$($p.Name).zip"
-        Compress-Archive -Path (Join-Path $outDir '*') -DestinationPath $zip -Force
+        if (Test-Path $zip) { Remove-Item $zip -Force }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        # Use ZipFile.CreateFromDirectory: produces entries with forward-slash separators
+        # required by Kudu/Flex Consumption (.azurefunctions/ root marker).
+        [IO.Compression.ZipFile]::CreateFromDirectory($outDir, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
         Write-Ok "$($p.Name).zip ($([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB)"
     }
 }
