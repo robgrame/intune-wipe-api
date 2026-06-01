@@ -41,8 +41,19 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [object]$WebhookData
+    [Parameter(Mandatory = $false)]
+    [object]$WebhookData,
+
+    # Direct-invocation parameters (used when started from portal / az CLI
+    # without a webhook). If provided, take precedence over WebhookData.
+    [Parameter(Mandatory = $false)] [string]$IntuneDeviceId,
+    [Parameter(Mandatory = $false)] [string]$EntraDeviceId,
+    [Parameter(Mandatory = $false)] [string]$DeviceName,
+    [Parameter(Mandatory = $false)] [string]$CorrelationId,
+
+    # Test mode: skip the Graph wipe call (still authenticates + logs the
+    # full pipeline so the job is visible in the portal).
+    [Parameter(Mandatory = $false)] [bool]$TestMode = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,23 +68,43 @@ $AuditTableName        = Get-AutomationVariable -Name 'AuditTableName'          
 $KeepEnrollmentData    = [bool](Get-AutomationVariable -Name 'KeepEnrollmentData')
 $KeepUserData          = [bool](Get-AutomationVariable -Name 'KeepUserData')
 
-# ─── Envelope parse ─────────────────────────────────────────────────────────
-if (-not $WebhookData -or -not $WebhookData.RequestBody) {
-    throw 'Runbook must be triggered via webhook with envelope body.'
+# ─── Envelope resolution ────────────────────────────────────────────────────
+if ($IntuneDeviceId) {
+    $correlationId  = if ($CorrelationId) { $CorrelationId } else { [guid]::NewGuid().ToString() }
+    $intuneDeviceId = $IntuneDeviceId
+    $entraDeviceId  = $EntraDeviceId
+    $deviceName     = $DeviceName
+    Write-Output "runbook-wipe source=direct mode=$(if($TestMode){'TEST'}else{'LIVE'})"
 }
-$envelope = $WebhookData.RequestBody | ConvertFrom-Json
-$correlationId   = $envelope.correlationId
-$intuneDeviceId  = $envelope.payload.intuneDeviceId
-$entraDeviceId   = $envelope.payload.entraDeviceId
-$deviceName      = $envelope.payload.deviceName
+elseif ($WebhookData -and $WebhookData.RequestBody) {
+    $envelope        = $WebhookData.RequestBody | ConvertFrom-Json
+    $correlationId   = $envelope.correlationId
+    $intuneDeviceId  = $envelope.payload.intuneDeviceId
+    $entraDeviceId   = $envelope.payload.entraDeviceId
+    $deviceName      = $envelope.payload.deviceName
+    Write-Output "runbook-wipe source=webhook"
+}
+else {
+    throw 'Runbook requires either -WebhookData (from webhook) or -IntuneDeviceId (direct invocation).'
+}
 
 Write-Output "runbook-wipe start corr=$correlationId intune=$intuneDeviceId name=$deviceName"
+Write-Output "config: ledger=$LedgerStorageAccount/$LedgerContainer audit=$AuditStorageAccount/$AuditTableName keepEnrollment=$KeepEnrollmentData keepUser=$KeepUserData"
 
 # ─── Connect to Azure via system-assigned MI ────────────────────────────────
 Connect-AzAccount -Identity | Out-Null
+Write-Output "az auth: connected as $((Get-AzContext).Account.Id)"
 
 # ─── Acquire Graph token via the MI ─────────────────────────────────────────
 $tokenObj = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com'
+Write-Output "graph token: acquired (expires $($tokenObj.ExpiresOn))"
+
+if ($TestMode) {
+    Write-Output "TEST MODE: skipping Graph wipe POST. Pipeline OK."
+    Write-Output "runbook-wipe done corr=$correlationId (test)"
+    return
+}
+
 $headers  = @{
     Authorization  = "Bearer $($tokenObj.Token)"
     'Content-Type' = 'application/json'
