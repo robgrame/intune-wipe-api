@@ -1,0 +1,346 @@
+X-Unsent: 1
+MIME-Version: 1.0
+From: Roberto Gramellini <roberto.gramellini@microsoft.com>
+To: 
+Subject: Intune Self-Wipe - Stima costi ambiente di produzione (10/50/100 richieste/giorno)
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE html>
+<html lang=3D"it">
+<head>
+<meta charset=3D"UTF-8">
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; font-size: 14px; color: =
+#1a1a1a; background: #f5f5f5; margin: 0; padding: 0; }
+  .wrapper { background: #ffffff; padding: 32px 40px; }
+  h1 { font-size: 22px; color: #0078d4; border-bottom: 2px solid #0078d4; p=
+adding-bottom: 8px; }
+  h2 { font-size: 17px; color: #106ebe; margin-top: 28px; }
+  h3 { font-size: 15px; color: #333; margin-top: 18px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th { background: #0078d4; color: #fff; padding: 8px 12px; text-align: lef=
+t; }
+  td { padding: 8px 12px; border: 1px solid #ddd; vertical-align: top; }
+  tr:nth-child(even) td { background: #f0f7ff; }
+  blockquote { border-left: 4px solid #0078d4; margin: 12px 0; padding: 8px=
+ 16px; background: #e8f2fc; color: #333; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 24px 0; }
+  ul li, ol li { margin: 4px 0; }
+  .highlight { background: #fff8e6; border-left: 4px solid #f0a500; padding=
+: 10px 14px; margin: 10px 0; }
+  .highlight strong { color: #8a6100; }
+  .totrow td { background: #e8f2fc !important; font-weight: 600; }
+  .small { font-size: 12px; color: #666; }
+  .sig { margin-top: 40px; padding-top: 20px; border-top: 2px solid #0078d4=
+; font-size: 13px; color: #555; }
+  .sig strong { color: #0078d4; font-size: 15px; display: block; margin-bot=
+tom: 4px; }
+</style>
+</head>
+<body>
+<div class=3D"wrapper">
+
+<p>Gentile Team,</p>
+<p>a seguito della richiesta, condivido una <strong>stima dei costi</strong=
+> per il deployment in <strong>produzione</strong> della soluzione <strong>=
+Intune Self-Wipe</strong>, dimensionata sui profili di carico indicati: <st=
+rong>10, 50 e 100 richieste/giorno</strong>.</p>
+
+<div class=3D"highlight">
+<strong>Sintesi esecutiva.</strong> Ai volumi richiesti (max ~3.000 richies=
+te/mese) il costo =C3=A8 <em>dominato dal piano di hosting</em> always-on, =
+non dal numero di richieste. Le componenti a consumo (storage, ingest tele=
+metrico, transazioni queue/table) restano <strong>nell'ordine di pochi eur=
+o/mese</strong> in tutti e tre gli scenari. La scelta architetturale princi=
+pale =C3=A8 quindi tra <strong>resilienza/performance</strong> (Premium) e =
+<strong>cost optimization</strong> (Flex Consumption).
+</div>
+
+<hr>
+
+<h1>Stima costi produzione - Intune Self-Wipe</h1>
+
+<h2>1. Premesse e perimetro</h2>
+<ul>
+  <li><strong>Regione</strong>: West Europe (prezzi indicativi a listino p=
+ubblico, in EUR, IVA esclusa, senza sconti EA/CSP/MCA).</li>
+  <li><strong>Profili di carico</strong>: 10 / 50 / 100 richieste di wipe a=
+l giorno (=E2=89=88 300 / 1.500 / 3.000 al mese).</li>
+  <li><strong>Single region</strong> (no DR/multi-region). Disponibilit=C3=
+=A0 attesa: SLA dei singoli servizi PaaS (~99,95%).</li>
+  <li><strong>Esclusioni</strong>: traffico in egress verso Internet (trasc=
+urabile alle volumetrie indicate), licenze Intune/Entra (gi=C3=A0 presenti =
+nel tenant), tempo/effort operativo, certificati mTLS (PKI cliente), eventu=
+ali costi di networking ibrido (ExpressRoute, peering).</li>
+  <li><strong>Note</strong>: i prezzi puntuali Azure evolvono mensilmente. =
+Le cifre sono <em>indicative</em> e vanno validate con l'<a href=3D"https:/=
+/azure.microsoft.com/it-it/pricing/calculator/">Azure Pricing Calculator</a=
+> al momento del commit budget.</li>
+</ul>
+
+<h2>2. Componenti della soluzione</h2>
+<p>Lo stato <strong>attuale</strong> della soluzione prevede <strong>due Fu=
+nction App</strong>: il "Web" per l'ingresso HTTP e il "Worker" che ospita =
+sia il <em>dispatcher</em> sia le <em>action runner</em> (oggi solo Wipe) c=
+ome plugin in-process. Il refactor modulare ha introdotto l'astrazione <cod=
+e>IActionRunner</code> a livello di codice; l'isolamento a <strong>risorsa =
+Azure dedicata per ciascuna capability</strong> =C3=A8 invece previsto come=
+ <strong>evoluzione di breve termine</strong> (vedi =C2=A76).</p>
+<table>
+  <tr><th>Risorsa</th><th>Ruolo</th><th>Sensibilit=C3=A0 al volume</th></tr=
+>
+  <tr><td>Function App <em>Web</em> (HTTP trigger)</td><td>Ingresso richies=
+te dai client, mTLS, validazione, enqueue</td><td>Bassa</td></tr>
+  <tr><td>Function App <em>Worker</em> (Queue/Timer trigger)</td><td>Dispat=
+cher action + runner Wipe (plugin in-process) + polling status</td><td>Bass=
+a</td></tr>
+  <tr><td>App Service Plan (hosting)</td><td>Compute per le due Function Ap=
+p</td><td><strong>Fissa</strong> (always-on)</td></tr>
+  <tr><td>Storage Account (proc)</td><td>Queue richieste, Table audit, Tabl=
+e wipe-status, Blob idempotency ledger</td><td>Lineare, trascurabile</td></=
+tr>
+  <tr><td>Storage Account (web runtime)</td><td>Storage runtime Functions =
+(AzureWebJobsStorage)</td><td>Fissa, trascurabile</td></tr>
+  <tr><td>Application Insights + Log Analytics</td><td>Telemetria, audit st=
+rutturato, KQL diagnostics</td><td>Lineare (in volumetria GB ingest)</td></=
+tr>
+  <tr><td>Key Vault</td><td>Secrets/certificati trusted CA</td><td>Trascura=
+bile</td></tr>
+  <tr><td>Managed Identities (UAMI x2)</td><td>Identit=C3=A0 Entra per web =
+e worker</td><td><strong>Gratuita</strong></td></tr>
+  <tr><td>Microsoft Graph API</td><td>Comando wipe + lettura status device<=
+/td><td><strong>Gratuita</strong> (inclusa con M365)</td></tr>
+</table>
+
+<h2>3. Scenari di sizing</h2>
+<p>Propongo tre opzioni, di cui la <strong>Opzione B</strong> =C3=A8 la rac=
+comandata per la maggior parte degli scenari produttivi.</p>
+
+<h3>Opzione A - Production HA (configurazione attuale dev)</h3>
+<p>Due piani Elastic Premium <strong>EP1</strong> separati (uno per Functio=
+n App), VNet integration, private endpoint sui Storage, isolamento massimo =
+tra ingress e worker, scaling automatico, no cold start.</p>
+<table>
+  <tr><th>Voce</th><th>Quantit=C3=A0</th><th>Costo mensile (=E2=82=AC)</th>=
+</tr>
+  <tr><td>App Service Plan EP1 Linux (1 vCPU, 3.5 GB RAM)</td><td>2</td><td=
+>~ 340</td></tr>
+  <tr><td>Storage Account Standard_LRS Hot</td><td>2</td><td>~ 2</td></tr>
+  <tr><td>Application Insights + Log Analytics (entro free tier 5 GB)</td><=
+td>1</td><td>~ 0 - 5</td></tr>
+  <tr><td>Key Vault Standard</td><td>1</td><td>~ 1</td></tr>
+  <tr><td>Private endpoints (Storage Blob/Queue/Table x 2)</td><td>6</td><t=
+d>~ 50</td></tr>
+  <tr class=3D"totrow"><td colspan=3D"2">Totale stimato</td><td>~ 390 - 400=
+ =E2=82=AC/mese</td></tr>
+</table>
+<p class=3D"small">Variazione tra 10 e 100 req/giorno: trascurabile (&lt; 1=
+ =E2=82=AC/mese).</p>
+
+<h3>Opzione B - Production Standard (raccomandata)</h3>
+<p>Un singolo piano <strong>EP1</strong> condiviso tra le due Function App =
+(stessa SKU, costi dimezzati lato compute). Mantiene always-on, VNet integr=
+ation e SLA Premium. Adatto a workload "low-rate, high-criticality".</p>
+<table>
+  <tr><th>Voce</th><th>Quantit=C3=A0</th><th>Costo mensile (=E2=82=AC)</th>=
+</tr>
+  <tr><td>App Service Plan EP1 Linux (condiviso)</td><td>1</td><td>~ 170</t=
+d></tr>
+  <tr><td>Storage Account Standard_LRS Hot</td><td>2</td><td>~ 2</td></tr>
+  <tr><td>Application Insights + Log Analytics</td><td>1</td><td>~ 0 - 5</t=
+d></tr>
+  <tr><td>Key Vault Standard</td><td>1</td><td>~ 1</td></tr>
+  <tr><td>Private endpoints (opzionale, hardening)</td><td>0 - 6</td><td>~ =
+0 - 50</td></tr>
+  <tr class=3D"totrow"><td colspan=3D"2">Totale stimato</td><td>~ 175 - 230=
+ =E2=82=AC/mese</td></tr>
+</table>
+<p class=3D"small">Variazione tra 10 e 100 req/giorno: trascurabile (&lt; 1=
+ =E2=82=AC/mese).</p>
+
+<h3>Opzione C - Cost Optimized (Flex Consumption)</h3>
+<p>Piano <strong>Flex Consumption</strong> pay-per-execution. Niente always=
+-on (cold start nell'ordine di 1-3 s sulla prima richiesta), ma costo praz=
+ialmente nullo a riposo. Adatto solo se la latenza occasionale =C3=A8 acce=
+ttabile (tipico: utente lancia lo script e attende qualche secondo). VNet in=
+tegration disponibile, private endpoint limitati per regione.</p>
+<table>
+  <tr><th>Voce</th><th>Quantit=C3=A0</th><th>Costo mensile (=E2=82=AC)</th>=
+</tr>
+  <tr><td>Flex Consumption - esecuzioni (=E2=89=88 6.000/mese, ipotizzando =
+poller + dispatch + http per request)</td><td>1</td><td>~ 0 (entro free gra=
+nt)</td></tr>
+  <tr><td>Flex Consumption - GB-secondo memoria</td><td>1</td><td>~ 1 - 5</=
+td></tr>
+  <tr><td>Storage Account Standard_LRS Hot</td><td>2</td><td>~ 2</td></tr>
+  <tr><td>Application Insights + Log Analytics</td><td>1</td><td>~ 0 - 5</t=
+d></tr>
+  <tr><td>Key Vault Standard</td><td>1</td><td>~ 1</td></tr>
+  <tr class=3D"totrow"><td colspan=3D"2">Totale stimato</td><td>~ 10 - 20 =
+=E2=82=AC/mese</td></tr>
+</table>
+<p class=3D"small">Variazione tra 10 e 100 req/giorno: &lt; 2 =E2=82=AC/me=
+se. Lo scaling out =C3=A8 automatico ma con cold start iniziale.</p>
+
+<h2>4. Confronto rapido</h2>
+<table>
+  <tr>
+    <th>Profilo</th>
+    <th>Opz. A - HA</th>
+    <th>Opz. B - Standard</th>
+    <th>Opz. C - Cost Opt.</th>
+  </tr>
+  <tr><td>10 req/giorno</td><td>~ 395 =E2=82=AC</td><td>~ 180 =E2=82=AC</td=
+><td>~ 10 =E2=82=AC</td></tr>
+  <tr><td>50 req/giorno</td><td>~ 395 =E2=82=AC</td><td>~ 180 =E2=82=AC</td=
+><td>~ 12 =E2=82=AC</td></tr>
+  <tr><td>100 req/giorno</td><td>~ 396 =E2=82=AC</td><td>~ 181 =E2=82=AC</t=
+d><td>~ 15 =E2=82=AC</td></tr>
+  <tr><td><strong>Annuo (100 req/gg)</strong></td><td><strong>~ 4.750 =E2=
+=82=AC</strong></td><td><strong>~ 2.170 =E2=82=AC</strong></td><td><strong>=
+~ 180 =E2=82=AC</strong></td></tr>
+</table>
+
+<h2>5. Razionali e raccomandazione</h2>
+<ul>
+  <li><strong>Perch=C3=A9 il volume incide poco</strong>: ogni richiesta ge=
+nera ~50 KB di telemetria, &lt; 10 operazioni queue/table e una manciata di=
+ chiamate Graph. A 100 req/gg parliamo di ~5 MB/mese di ingest e poche mi=
+gliaia di transazioni storage: rientrano nei free tier o costano centesim=
+i.</li>
+  <li><strong>Perch=C3=A9 il piano always-on costa tanto</strong>: EP1 =C3=
+=A8 prenotato 24/7, indipendentemente dal traffico, perch=C3=A9 garantisce =
+warm start, VNet integration e SLA dedicato.</li>
+  <li><strong>Raccomandazione</strong>: partire con <strong>Opzione B</str=
+ong>. Garantisce produzione "vera" (always-on, VNet, audit completo) a un =
+costo contenuto e lascia headroom per i futuri moduli plug-in (blocco rem=
+oto, rotazione BitLocker, ecc.) senza dover ridimensionare. Opzione A si gi=
+ustifica solo se vi sono <strong>requisiti regolatori espliciti</strong> di=
+ isolamento ingress/worker.</li>
+  <li><strong>Opzione C</strong> =C3=A8 attraente economicamente ma intro=
+duce cold start sulla prima invocazione (impatto UX trascurabile in self-=
+service, da valutare in scenari di emergenza con utenti sotto stress).</li>
+  <li><strong>Ottimizzazioni future</strong> a basso impatto:
+    <ul>
+      <li>Reserved Instances/Savings Plan su EP1 (1Y/3Y): -30% / -50% sul =
+compute.</li>
+      <li>Sampling adattivo in App Insights se la telemetria cresce con i =
+nuovi moduli.</li>
+      <li>Lifecycle policy su container <code>wipe-ledger/_archive/</code>=
+ (auto-delete oltre N giorni).</li>
+    </ul>
+  </li>
+</ul>
+
+<h2>6. Architettura implementata - isolamento capability su Function App dedi=
+cata</h2>
+<p><strong>Stato: completato e deployato in dev (rg-intwipe-dev).</strong> =
+La capability <em>wipe</em> =C3=A8 stata estratta dal worker e gira ora su =
+una <strong>terza Function App "wipe-runner"</strong> dedicata, alimentata =
+da una coda Storage dedicata (<code>wipe-action</code>) verso cui il dispat=
+cher inoltra le richieste. Benefici realizzati:</p>
+<ul>
+  <li><strong>Blast radius isolato</strong>: un crash/bug nella capability =
+non impatta il dispatcher n=C3=A9 il front-end.</li>
+  <li><strong>Managed identity separata</strong>: i permessi privilegiati G=
+raph (<code>DeviceManagementManagedDevices.PrivilegedOperations.All</code>)=
+ vivono solo sulla wipe-runner app (UAMI <code>uamiWipe</code>), non sul di=
+spatcher.</li>
+  <li><strong>Lifecycle indipendente</strong>: deploy, rollback, feature fl=
+ag e versioning per singola capability.</li>
+  <li><strong>Scaling indipendente</strong>: se una capability diventa hot,=
+ scala da sola senza interferire con le altre.</li>
+  <li><strong>Storage runtime isolato</strong>: ogni Function App ha il pro=
+prio account di runtime per lease/secrets/scale, evitando contesa.</li>
+</ul>
+<p>La nuova app =C3=A8 ospitata su un <strong>App Service Plan EP1 dedicato=
+</strong> (<code>plan-intwipe-wipe-dev</code>), ottenendo isolamento comple=
+to di compute + identit=C3=A0 + permessi. Impatto sulla stima:</p>
+<table>
+  <tr><th>Voce</th><th>Costo mensile extra (=E2=82=AC)</th></tr>
+  <tr><td>Function App + plan EP1 dedicato per wipe-runner</td><td><strong>=
+~ +170</strong></td></tr>
+  <tr><td>Storage runtime dedicato (wipe-runner)</td><td>&lt; 0,50</td></tr>
+  <tr><td>Coda Storage <code>wipe-action</code> (volumi indicati)</td><td>&=
+lt; 0,10</td></tr>
+  <tr><td>UAMI <code>uamiWipe</code></td><td>0 (gratuita)</td></tr>
+</table>
+<p><strong>Nuovo totale Opzione B (3 Function App, 3 plan EP1):</strong> ~=
+=E2=82=AC 510/mese, di cui ~=E2=82=AC 510 in compute (3 =C3=97 EP1) + traff=
+ic/storage/AI trascurabili.</p>
+<p>Per ambienti dove =E2=82=AC 170/mese di overhead non sono accettabili, =
+=C3=A8 possibile ospitare la wipe-runner sullo <strong>stesso plan EP1 del =
+worker</strong> (opzione "B-shared"): si conserva isolamento di processo/i=
+dentit=C3=A0/permessi (ed =C3=A8 quanto serve di fatto per il privilege bo=
+undary Graph), perdendo l'isolamento compute. Costo extra: ~=E2=82=AC 0.</p>
+
+<h2>7. Variante alternativa - Azure Automation Runbook (demo)</h2>
+<p>A scopo dimostrativo del modello plug-in, =C3=A8 stato preparato un <st=
+rong>runbook PowerShell 7.2</strong> (<code>runbooks/Invoke-DeviceWipe.run=
+book.ps1</code>) che pu=C3=B2 sostituire la wipe-runner Function App come =
+executor della capability <em>wipe</em>, agganciandosi alla <strong>stessa=
+ infrastruttura core</strong> (HTTP front-end, dispatcher, coda, audit, l=
+edger) senza alcuna modifica.</p>
+<p>Stesso input (envelope <code>ActionDispatchMessage</code>), stesso outp=
+ut (chiamata Graph <code>POST /managedDevices/{id}/wipe</code>), stesso a=
+udit table. Cambia solo l'engine: dotnet-isolated su Function App vs. Pow=
+erShell 7.2 su Automation Account.</p>
+<table>
+  <tr><th>Voce</th><th>Costo mensile (=E2=82=AC)</th></tr>
+  <tr><td>Automation Account</td><td>0 (gratuito)</td></tr>
+  <tr><td>Job runtime (500 min/mese inclusi nel free tier)</td><td>0 ai vo=
+lumi indicati (10-100 wipe/giorno =3D &lt; 1 min/giorno)</td></tr>
+  <tr><td>Storage / audit / Graph</td><td>0 (riusa l'infra core)</td></td=
+></tr>
+</table>
+<p><strong>Quando ha senso</strong>: scenari ops PowerShell-centric, debug=
+ in-portal, demo al cliente del modello plug-in. <strong>Non =C3=A8 attiva=
+ta di default</strong> per evitare di duplicare la superficie di audit e i=
+ grant Graph: la wipe-runner Function App resta il path canonico, il run=
+book =C3=A8 un artefatto opt-in shippato nel repo (cartella <code>runbook=
+s/</code> con istruzioni di wire-up).</p>
+
+<h2>8. Assunzioni di calcolo</h2>
+<ul>
+  <li>Prezzi <strong>West Europe a listino pay-as-you-go</strong>, EUR, IVA=
+ esclusa, snapshot recente. Verifica puntuale tramite Azure Pricing Calcula=
+tor consigliata.</li>
+  <li>EP1 Linux: ~0,23 =E2=82=AC/h compute + memoria =E2=89=88 170 =E2=82=
+=AC/mese per istanza always-ready (=C3=A8 il <em>minimo</em> di un piano El=
+astic Premium).</li>
+  <li>Storage: hot tier, transazioni nell'ordine di poche migliaia/mese (=
+&lt; 0,01 =E2=82=AC).</li>
+  <li>Application Insights: i primi <strong>5 GB/mese</strong> sono inclusi=
+. Al ritmo attuale la soluzione resta ampiamente sotto.</li>
+  <li>Microsoft Graph e Entra ID: nessun costo aggiuntivo (incluso nelle li=
+cenze M365 esistenti).</li>
+</ul>
+
+<div class=3D"highlight">
+<strong>Importante.</strong> Le cifre proposte sono <em>indicative</em> e =
+mirano a supportare la scelta architetturale e il dimensionamento del budge=
+t. Per la sottoscrizione formale o il commit con il finance =C3=A8 oppor=
+tuno: (1) generare un quote ufficiale via Azure Pricing Calculator, (2) ap=
+plicare gli sconti contrattuali del cliente (EA/MCA/CSP), (3) considerare e=
+ventuali Reserved Instances o Savings Plan sul compute Premium.
+</div>
+
+<hr>
+
+<p>Rimango a disposizione per discutere lo scenario preferito, simulazioni =
+puntuali con il Pricing Calculator, oppure varianti (multi-region/DR, isol=
+amento di rete pi=C3=B9 spinto, integrazione con il portale).</p>
+
+<p>Buona giornata,<br>
+Roberto</p>
+
+<div class=3D"sig">
+<strong>Roberto Gramellini</strong>
+Cloud Solution Architect &middot; Microsoft<br>
+roberto.gramellini@microsoft.com
+</div>
+
+</div>
+</body>
+</html>

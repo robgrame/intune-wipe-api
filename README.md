@@ -198,14 +198,19 @@ L'UAMI del worker (`uamiWorkerPrincipalId`) riceve **tutti** i consent Graph
 `SanDnsLookup` (risoluzione directory per certificati AD CS che portano
 identità AD invece di EntraDeviceId). `Device.Read.All` è read-only e non
 concede capacità distruttive: il privilege boundary del wipe (che richiede
-`DeviceManagementManagedDevices.PrivilegedOperations.All`) resta sul worker.
+`DeviceManagementManagedDevices.PrivilegedOperations.All`) ora vive solo
+sulla **wipe-runner Function App dedicata** (UAMI `uamiWipe`). Il worker
+(`uamiWorker`) ora si occupa solo del routing/forwarding: NON serve più
+concedergli i ruoli privilegiati Graph (mantenerli temporaneamente non
+crea rischi, ma per ottenere il privilege boundary completo è raccomandato
+rimuoverli dopo il cutover — vedi sezione "Cutover privilegi" più sotto).
 
 Se non userai mai `SanDnsLookup` (cert SCEP/PKCS Intune nativi con
 `{{AAD_Device_ID}}`), puoi omettere il consent su `uamiWebPrincipalId` — il
 modulo va in fail-closed loggando un warning.
 
 ```pwsh
-$workerPrincipalId = '<uamiWorkerPrincipalId dall''output>'
+$wipePrincipalId   = '<uamiWipePrincipalId   dall''output>'
 $webPrincipalId    = '<uamiWebPrincipalId    dall''output>'
 $graphSpId         = az ad sp list --filter "appId eq '00000003-0000-0000-c000-000000000000'" --query "[0].id" -o tsv
 
@@ -219,16 +224,31 @@ function Grant-GraphAppRole($principalId, $roleValue) {
   Remove-Item $tmp
 }
 
-# Worker: full Graph scope for wipe
+# Wipe-runner (dedicated): full Graph scope for wipe execution
 foreach ($r in @(
   'DeviceManagementManagedDevices.PrivilegedOperations.All',
   'DeviceManagementManagedDevices.Read.All',
   'Device.Read.All',
   'GroupMember.Read.All'
-)) { Grant-GraphAppRole $workerPrincipalId $r }
+)) { Grant-GraphAppRole $wipePrincipalId $r }
 
 # Web: ONLY Device.Read.All (read-only directory enumeration for SanDnsLookup)
 Grant-GraphAppRole $webPrincipalId 'Device.Read.All'
+```
+
+**Cutover privilegi (post-deploy Option-2):** una volta che la wipe-runner
+app è operativa, puoi revocare i ruoli Graph privilegiati al worker per
+chiudere completamente il privilege boundary:
+
+```pwsh
+$workerPrincipalId = '<uamiWorkerPrincipalId dall''output>'
+$assignments = az rest --method GET `
+  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$workerPrincipalId/appRoleAssignments" `
+  --query "value[?resourceId=='$graphSpId'].id" -o tsv
+foreach ($a in ($assignments -split "`n" | Where-Object { $_ })) {
+  az rest --method DELETE `
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$workerPrincipalId/appRoleAssignments/$a"
+}
 ```
 
 ### 4. Pubblica il codice su entrambe le Function App

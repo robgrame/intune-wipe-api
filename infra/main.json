@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "12380014016957185489"
+      "templateHash": "6948563429663767536"
     }
   },
   "parameters": {
@@ -153,6 +153,20 @@
         "description": "Storage queue name for wipe requests"
       }
     },
+    "actionDispatchQueueName": {
+      "type": "string",
+      "defaultValue": "action-dispatch",
+      "metadata": {
+        "description": "Storage queue name for plug-in action dispatch (router queue consumed by ActionDispatchFunction)."
+      }
+    },
+    "wipeActionQueueName": {
+      "type": "string",
+      "defaultValue": "wipe-action",
+      "metadata": {
+        "description": "Storage queue name for the dedicated wipe-runner Function App. The worker enqueues here via WipeForwardingRunner; the wipe app consumes via WipeActionConsumerFunction."
+      }
+    },
     "ledgerContainerName": {
       "type": "string",
       "defaultValue": "wipe-ledger",
@@ -165,6 +179,48 @@
       "defaultValue": "auditevents",
       "metadata": {
         "description": "Table name used for long-term audit event persistence (dual-write alongside App Insights)"
+      }
+    },
+    "wipeStatusTableName": {
+      "type": "string",
+      "defaultValue": "wipestatus",
+      "metadata": {
+        "description": "Name of the Azure Table holding per-correlationId wipe action status. Polled by WipeStatusPollerFunction."
+      }
+    },
+    "wipeStatusPollerCron": {
+      "type": "string",
+      "defaultValue": "0 */2 * * * *",
+      "metadata": {
+        "description": "NCRONTAB expression for the wipe-action status poller. Default: every 2 minutes (tight polling for prompt operator visibility on stuck wipes)."
+      }
+    },
+    "idempotencyMaxWipesPerDay": {
+      "type": "int",
+      "defaultValue": 5,
+      "metadata": {
+        "description": "Max wipes per device per 24h. Hard ceiling enforced by the ledger."
+      }
+    },
+    "idempotencyRearmGracePeriodHours": {
+      "type": "int",
+      "defaultValue": 48,
+      "metadata": {
+        "description": "Hours to wait before auto-rearming a ledger whose previous wipe ended in pollTimeout."
+      }
+    },
+    "idempotencyAllowForceRearm": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "If true, the X-Force-Rearm HTTP header bypasses the tracker-based rearm gate. Keep false in prod."
+      }
+    },
+    "idempotencyAdminApiEnabled": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "If true, the /api/admin/wipe-ledger/* endpoints are reachable (function key still required). Default false in prod."
       }
     }
   },
@@ -182,10 +238,16 @@
     "uamiWebName": "[toLower(format('{0}-uami-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planWebName": "[toLower(format('{0}-plan-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planProcName": "[toLower(format('{0}-plan-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "planWipeName": "[toLower(format('{0}-plan-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "wipeName": "[toLower(format('{0}-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "uamiWipeName": "[toLower(format('{0}-uami-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stWipeRaw": "[toLower(format('{0}stwp{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stWipeName": "[if(greater(length(variables('stWipeRaw')), 24), substring(variables('stWipeRaw'), 0, 24), variables('stWipeRaw'))]",
     "blobDataOwner": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
     "queueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
     "tableDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
-    "queueDataMessageSender": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')]"
+    "queueDataMessageSender": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')]",
+    "blobDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]"
   },
   "resources": [
     {
@@ -265,6 +327,22 @@
       ]
     },
     {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('actionDispatchQueueName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices', variables('stProcName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('wipeActionQueueName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices', variables('stProcName'), 'default')]"
+      ]
+    },
+    {
       "type": "Microsoft.Storage/storageAccounts/blobServices",
       "apiVersion": "2023-05-01",
       "name": "[format('{0}/{1}', variables('stProcName'), 'default')]",
@@ -300,6 +378,14 @@
       ]
     },
     {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stProcName'), 'default', parameters('wipeStatusTableName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', variables('stProcName'), 'default')]"
+      ]
+    },
+    {
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiName')]",
@@ -310,6 +396,29 @@
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiWebName')]",
       "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('uamiWipeName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('stWipeName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "supportsHttpsTrafficOnly": true
+      }
     },
     {
       "type": "Microsoft.Web/serverfarms",
@@ -342,6 +451,21 @@
       }
     },
     {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planWipeName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "EP1",
+        "tier": "ElasticPremium"
+      },
+      "kind": "elastic",
+      "properties": {
+        "reserved": true,
+        "maximumElasticWorkerCount": 5
+      }
+    },
+    {
       "type": "Microsoft.Web/sites",
       "apiVersion": "2023-12-01",
       "name": "[variables('webName')]",
@@ -358,6 +482,7 @@
         "httpsOnly": true,
         "clientCertEnabled": true,
         "clientCertMode": "Required",
+        "clientCertExclusionPaths": "/api/wipe-ledger",
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
         "siteConfig": {
           "minTlsVersion": "1.2",
@@ -406,6 +531,18 @@
               "value": "true"
             },
             {
+              "name": "AzureWebJobs.WipeStatusPoller.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.ActionDispatch.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeAction.Disabled",
+              "value": "true"
+            },
+            {
               "name": "Queue__StorageAccount",
               "value": "[variables('stProcName')]"
             },
@@ -420,6 +557,46 @@
             {
               "name": "Audit__TableName",
               "value": "[parameters('auditTableName')]"
+            },
+            {
+              "name": "Idempotency__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__BlobContainer",
+              "value": "[parameters('ledgerContainerName')]"
+            },
+            {
+              "name": "Idempotency__AllowForceRearm",
+              "value": "[string(parameters('idempotencyAllowForceRearm'))]"
+            },
+            {
+              "name": "Idempotency__AdminApiEnabled",
+              "value": "[string(parameters('idempotencyAdminApiEnabled'))]"
+            },
+            {
+              "name": "Idempotency__MaxWipesPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+            },
+            {
+              "name": "Idempotency__RearmGracePeriodHours",
+              "value": "[string(parameters('idempotencyRearmGracePeriodHours'))]"
+            },
+            {
+              "name": "WipeStatus__TableName",
+              "value": "[parameters('wipeStatusTableName')]"
+            },
+            {
+              "name": "Wipe__AllowedGroupId",
+              "value": "[parameters('allowedGroupId')]"
+            },
+            {
+              "name": "Wipe__KeepEnrollmentData",
+              "value": "[string(parameters('keepEnrollmentData'))]"
+            },
+            {
+              "name": "Wipe__KeepUserData",
+              "value": "[string(parameters('keepUserData'))]"
             },
             {
               "name": "ClientCert__TrustedCaThumbprints",
@@ -552,6 +729,14 @@
               "value": "true"
             },
             {
+              "name": "WipeStatus__TableName",
+              "value": "[parameters('wipeStatusTableName')]"
+            },
+            {
+              "name": "WipeStatusPoller__CronExpression",
+              "value": "[parameters('wipeStatusPollerCron')]"
+            },
+            {
               "name": "Queue__StorageAccount",
               "value": "[variables('stProcName')]"
             },
@@ -560,12 +745,40 @@
               "value": "[parameters('wipeQueueName')]"
             },
             {
+              "name": "Actions__DispatchQueueName",
+              "value": "[parameters('actionDispatchQueueName')]"
+            },
+            {
+              "name": "WipeAction__QueueName",
+              "value": "[parameters('wipeActionQueueName')]"
+            },
+            {
+              "name": "AzureWebJobs.WipeAction.Disabled",
+              "value": "true"
+            },
+            {
               "name": "Idempotency__BlobContainer",
               "value": "[parameters('ledgerContainerName')]"
             },
             {
               "name": "Idempotency__StorageAccount",
               "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__AllowForceRearm",
+              "value": "[string(parameters('idempotencyAllowForceRearm'))]"
+            },
+            {
+              "name": "Idempotency__AdminApiEnabled",
+              "value": "[string(parameters('idempotencyAdminApiEnabled'))]"
+            },
+            {
+              "name": "Idempotency__MaxWipesPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+            },
+            {
+              "name": "Idempotency__RearmGracePeriodHours",
+              "value": "[string(parameters('idempotencyRearmGracePeriodHours'))]"
             },
             {
               "name": "Audit__StorageAccount",
@@ -724,6 +937,288 @@
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), 'blob-ledger')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'queue-send')]",
+      "properties": {
+        "roleDefinitionId": "[variables('queueDataMessageSender')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('wipeName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planWipeName'))]",
+        "httpsOnly": true,
+        "clientCertEnabled": false,
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]",
+        "siteConfig": {
+          "minTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "linuxFxVersion": "DOTNET-ISOLATED|10.0",
+          "scmIpSecurityRestrictionsUseMain": true,
+          "appSettings": [
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "dotnet-isolated"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "1"
+            },
+            {
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('stWipeName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "AzureWebJobsStorage__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "AZURE_CLIENT_ID",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "App__Role",
+              "value": "wipe"
+            },
+            {
+              "name": "AzureWebJobs.WipeRequest.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeStatus.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeProcessor.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeStatusPoller.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.ActionDispatch.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeLedger_Get.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "AzureWebJobs.WipeLedger_Reset.Disabled",
+              "value": "true"
+            },
+            {
+              "name": "WipeAction__QueueName",
+              "value": "[parameters('wipeActionQueueName')]"
+            },
+            {
+              "name": "Queue__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__BlobContainer",
+              "value": "[parameters('ledgerContainerName')]"
+            },
+            {
+              "name": "Idempotency__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__AllowForceRearm",
+              "value": "[string(parameters('idempotencyAllowForceRearm'))]"
+            },
+            {
+              "name": "Idempotency__AdminApiEnabled",
+              "value": "false"
+            },
+            {
+              "name": "Idempotency__MaxWipesPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+            },
+            {
+              "name": "Idempotency__RearmGracePeriodHours",
+              "value": "[string(parameters('idempotencyRearmGracePeriodHours'))]"
+            },
+            {
+              "name": "Audit__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Audit__TableName",
+              "value": "[parameters('auditTableName')]"
+            },
+            {
+              "name": "WipeStatus__TableName",
+              "value": "[parameters('wipeStatusTableName')]"
+            },
+            {
+              "name": "Graph__TenantId",
+              "value": "[parameters('graphTenantId')]"
+            },
+            {
+              "name": "Graph__ManagedIdentityClientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "Wipe__AllowedGroupId",
+              "value": "[parameters('allowedGroupId')]"
+            },
+            {
+              "name": "Wipe__KeepEnrollmentData",
+              "value": "[string(parameters('keepEnrollmentData'))]"
+            },
+            {
+              "name": "Wipe__KeepUserData",
+              "value": "[string(parameters('keepUserData'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planWipeName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'blob')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataOwner')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'queue')]",
+      "properties": {
+        "roleDefinitionId": "[variables('queueDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'table')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'queue-consume')]",
+      "properties": {
+        "roleDefinitionId": "[variables('queueDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', variables('stProcName'), 'default', parameters('wipeActionQueueName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'blob-ledger')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), 'table-shared')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+      ]
     }
   ],
   "outputs": {
@@ -743,6 +1238,14 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Web/sites', variables('procName')), '2023-12-01').defaultHostName]"
     },
+    "wipeAppName": {
+      "type": "string",
+      "value": "[variables('wipeName')]"
+    },
+    "wipeAppHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('wipeName')), '2023-12-01').defaultHostName]"
+    },
     "uamiWorkerClientId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
@@ -759,6 +1262,14 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').principalId]"
     },
+    "uamiWipeClientId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').clientId]"
+    },
+    "uamiWipePrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]"
+    },
     "storageWebAccount": {
       "type": "string",
       "value": "[variables('stWebName')]"
@@ -767,9 +1278,17 @@
       "type": "string",
       "value": "[variables('stProcName')]"
     },
+    "storageWipeAccount": {
+      "type": "string",
+      "value": "[variables('stWipeName')]"
+    },
     "wipeQueueName": {
       "type": "string",
       "value": "[parameters('wipeQueueName')]"
+    },
+    "wipeActionQueueName": {
+      "type": "string",
+      "value": "[parameters('wipeActionQueueName')]"
     },
     "ledgerContainerName": {
       "type": "string",

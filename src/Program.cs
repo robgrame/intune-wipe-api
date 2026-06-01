@@ -185,8 +185,58 @@ var host = new HostBuilder()
         });
         services.AddSingleton<ActionDispatchEnqueuer>();
         services.AddSingleton<ActionRunnerRegistry>();
-        // Built-in runners — add new IActionRunner registrations below for new capabilities.
-        services.AddSingleton<IActionRunner, WipeActionRunner>();
+
+        // --- Per-capability dedicated runner queue (wipe) ------------------
+        // This queue carries ActionDispatchMessage envelopes from the worker's
+        // WipeForwardingRunner to the dedicated wipe-runner Function App.
+        services.AddSingleton(sp =>
+        {
+            var cred = sp.GetRequiredService<TokenCredential>();
+            var queueName = cfg["WipeAction:QueueName"] ?? "wipe-action";
+            var account = cfg["Queue:StorageAccount"]
+                ?? cfg["AzureWebJobsStorage__accountName"]
+                ?? cfg["Idempotency:StorageAccount"];
+            // Base64 message encoding to match the Functions queue trigger
+            // default on the wipe-runner app.
+            var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+            QueueClient client;
+            if (string.IsNullOrWhiteSpace(account))
+            {
+                client = new QueueClient(cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true", queueName, options);
+                client.CreateIfNotExists();
+            }
+            else
+            {
+                client = new QueueClient(
+                    new Uri($"https://{account}.queue.core.windows.net/{queueName}"),
+                    cred, options);
+            }
+            return new WipeActionQueueClient(client);
+        });
+
+        // Built-in runners — registration is role-aware so each app holds ONLY
+        // the runners it is supposed to execute. The privileged Graph identity
+        // lives on the wipe-runner app exclusively (App__Role=wipe). The worker
+        // app (App__Role=proc) holds only the forwarder, which just enqueues to
+        // the per-capability queue — no Graph call.
+        var role = AppRoleGuard.CurrentRole;
+        if (string.Equals(role, AppRoleGuard.Wipe, StringComparison.OrdinalIgnoreCase))
+        {
+            // On the wipe-runner app: register the real runner, both as
+            // IActionRunner (in case the registry is ever used here) and as a
+            // concrete type so WipeActionConsumerFunction can resolve it.
+            services.AddSingleton<WipeActionRunner>();
+            services.AddSingleton<IActionRunner>(sp => sp.GetRequiredService<WipeActionRunner>());
+        }
+        else if (string.Equals(role, AppRoleGuard.Proc, StringComparison.OrdinalIgnoreCase))
+        {
+            // On the worker app: register only the forwarder for the "wipe"
+            // ActionType. The real runner code never loads here and the worker
+            // identity does not need privileged Graph permissions.
+            services.AddSingleton<IActionRunner, WipeForwardingRunner>();
+        }
+        // On web (or unset role) no runner is registered — the dispatch
+        // function is disabled there anyway.
         // ------------------------------------------------------------------
 
         // Wipe action status tracker (separate table from auditevents because

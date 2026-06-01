@@ -65,6 +65,9 @@ param wipeQueueName string = 'wipe-requests'
 @description('Storage queue name for plug-in action dispatch (router queue consumed by ActionDispatchFunction).')
 param actionDispatchQueueName string = 'action-dispatch'
 
+@description('Storage queue name for the dedicated wipe-runner Function App. The worker enqueues here via WipeForwardingRunner; the wipe app consumes via WipeActionConsumerFunction.')
+param wipeActionQueueName string = 'wipe-action'
+
 @description('Blob container name used as the idempotency ledger for wipe operations')
 param ledgerContainerName string = 'wipe-ledger'
 
@@ -104,6 +107,14 @@ var uamiWebName = toLower('${namePrefix}-uami-web-${suffix}')   // public web id
 // worker process' environment (which holds the Graph-consented UAMI token).
 var planWebName  = toLower('${namePrefix}-plan-web-${suffix}')
 var planProcName = toLower('${namePrefix}-plan-proc-${suffix}')
+var planWipeName = toLower('${namePrefix}-plan-wipe-${suffix}')
+
+// Dedicated wipe-runner Function App + identity (privileged Graph identity
+// lives here EXCLUSIVELY, isolated from the generic dispatcher on the worker).
+var wipeName     = toLower('${namePrefix}-wipe-${suffix}')
+var uamiWipeName = toLower('${namePrefix}-uami-wipe-${suffix}')
+var stWipeRaw    = toLower('${namePrefix}stwp${suffix}')
+var stWipeName   = length(stWipeRaw) > 24 ? substring(stWipeRaw, 0, 24) : stWipeRaw
 
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: lawName
@@ -170,6 +181,15 @@ resource actionDispatchQueue 'Microsoft.Storage/storageAccounts/queueServices/qu
   name: actionDispatchQueueName
 }
 
+// Per-capability dedicated queue for the wipe runner. Producer:
+// WipeForwardingRunner on the worker (Sender-only). Consumer:
+// WipeActionConsumerFunction on the wipe-runner Function App
+// (Storage Queue Data Contributor scoped to this queue).
+resource wipeActionQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueSvc
+  name: wipeActionQueueName
+}
+
 resource blobSvc 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageProc
   name: 'default'
@@ -210,6 +230,33 @@ resource uamiWeb 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' =
   location: location
 }
 
+// Dedicated identity for the wipe-runner Function App. After deployment, the
+// privileged Graph permissions (DeviceManagementManagedDevices.PrivilegedOperations.All
+// + Read.All + Device.Read.All + GroupMember.Read.All) MUST be granted to
+// THIS principal via the README post-deploy script. The worker identity
+// (uami) should NOT carry these permissions in the target state.
+resource uamiWipe 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: uamiWipeName
+  location: location
+}
+
+// Wipe-runner app's runtime storage. Isolated from web and worker accounts
+// so the Functions host requirements (lease/secrets/scale tables) don't
+// inflate the privilege surface on shared infrastructure.
+resource storageWipe 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stWipeName
+  location: location
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Enabled'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
 resource planWeb 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planWebName
   location: location
@@ -224,6 +271,20 @@ resource planWeb 'Microsoft.Web/serverfarms@2023-12-01' = {
 
 resource planProc 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planProcName
+  location: location
+  sku: { name: 'EP1', tier: 'ElasticPremium' }
+  kind: 'elastic'
+  properties: {
+    reserved: true
+    maximumElasticWorkerCount: 5
+  }
+}
+
+// Dedicated plan for the wipe-runner. Separate from planProc so a runaway
+// wipe capability cannot starve the generic dispatcher (or vice versa) and
+// scaling is independent per capability.
+resource planWipe 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: planWipeName
   location: location
   sku: { name: 'EP1', tier: 'ElasticPremium' }
   kind: 'elastic'
@@ -277,6 +338,8 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         // The plug-in router lives on the worker app — disable here so the
         // web app doesn't try to bind the action-dispatch queue trigger.
         { name: 'AzureWebJobs.ActionDispatch.Disabled', value: 'true' }
+        // The wipe-action consumer lives on the dedicated wipe-runner app.
+        { name: 'AzureWebJobs.WipeAction.Disabled', value: 'true' }
         // Queue write (enqueue only — identity has Sender role on the queue
         // resource of the *worker's* storage account, not on this app's runtime
         // storage).
@@ -368,6 +431,13 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'Queue__StorageAccount', value: storageProc.name }
         { name: 'Queue__WipeQueueName', value: wipeQueueName }
         { name: 'Actions__DispatchQueueName', value: actionDispatchQueueName }
+        // Forwarding to the dedicated wipe-runner Function App (Option-2
+        // architecture). The worker only enqueues; the actual Graph call is
+        // performed on the wipe-runner app.
+        { name: 'WipeAction__QueueName', value: wipeActionQueueName }
+        // The WipeAction queue trigger does NOT live on this app — disable to
+        // avoid the host attempting to bind it here.
+        { name: 'AzureWebJobs.WipeAction.Disabled', value: 'true' }
         { name: 'Idempotency__BlobContainer', value: ledgerContainerName }
         { name: 'Idempotency__StorageAccount', value: storageProc.name }
         { name: 'Idempotency__AllowForceRearm',         value: string(idempotencyAllowForceRearm) }
@@ -468,15 +538,143 @@ resource raWebLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   properties: { roleDefinitionId: blobDataContributor, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
 }
 
+// Worker identity → Sender on the per-capability wipe-action queue. The
+// WipeForwardingRunner uses ONLY this enqueue path; no read/peek/delete
+// is granted on this queue, so the worker cannot consume its own forwards.
+resource raProcWipeActionSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(wipeActionQueue.id, uami.id, 'queue-send')
+  scope: wipeActionQueue
+  properties: { roleDefinitionId: queueDataMessageSender, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Dedicated wipe-runner Function App: hosts ONLY WipeActionConsumerFunction.
+// Privileged Graph identity (DeviceManagementManagedDevices.PrivilegedOperations.All)
+// MUST be granted to uamiWipe (post-deploy script). This app is the only one
+// in the topology authorized to execute managedDevices/{id}/wipe.
+// ───────────────────────────────────────────────────────────────────────────
+resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
+  name: wipeName
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${uamiWipe.id}': {} }
+  }
+  properties: {
+    serverFarmId: planWipe.id
+    httpsOnly: true
+    clientCertEnabled: false
+    keyVaultReferenceIdentity: uamiWipe.id
+    siteConfig: {
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      linuxFxVersion: 'DOTNET-ISOLATED|10.0'
+      scmIpSecurityRestrictionsUseMain: true
+      appSettings: [
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME',    value: 'dotnet-isolated' }
+        { name: 'WEBSITE_RUN_FROM_PACKAGE',    value: '1' }
+        { name: 'AzureWebJobsStorage__accountName', value: storageWipe.name }
+        { name: 'AzureWebJobsStorage__credential',  value: 'managedidentity' }
+        { name: 'AzureWebJobsStorage__clientId',    value: uamiWipe.properties.clientId }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
+        { name: 'AZURE_CLIENT_ID', value: uamiWipe.properties.clientId }
+        // App role guard: this app is the dedicated wipe-runner.
+        { name: 'App__Role', value: 'wipe' }
+        // Selector: keep ONLY the wipe-action consumer enabled here.
+        { name: 'AzureWebJobs.WipeRequest.Disabled',       value: 'true' }
+        { name: 'AzureWebJobs.WipeStatus.Disabled',        value: 'true' }
+        { name: 'AzureWebJobs.WipeProcessor.Disabled',     value: 'true' }
+        { name: 'AzureWebJobs.WipeStatusPoller.Disabled',  value: 'true' }
+        { name: 'AzureWebJobs.ActionDispatch.Disabled',    value: 'true' }
+        { name: 'AzureWebJobs.WipeLedger_Get.Disabled',    value: 'true' }
+        { name: 'AzureWebJobs.WipeLedger_Reset.Disabled',  value: 'true' }
+        // Per-capability queue consumed by WipeActionConsumerFunction.
+        { name: 'WipeAction__QueueName',  value: wipeActionQueueName }
+        { name: 'Queue__StorageAccount',  value: storageProc.name }
+        // Idempotency ledger (Reserve/MarkIssued executed by WipeActionRunner here).
+        { name: 'Idempotency__BlobContainer',           value: ledgerContainerName }
+        { name: 'Idempotency__StorageAccount',          value: storageProc.name }
+        { name: 'Idempotency__AllowForceRearm',         value: string(idempotencyAllowForceRearm) }
+        { name: 'Idempotency__AdminApiEnabled',         value: 'false' }
+        { name: 'Idempotency__MaxWipesPerDevicePerDay', value: string(idempotencyMaxWipesPerDay) }
+        { name: 'Idempotency__RearmGracePeriodHours',   value: string(idempotencyRearmGracePeriodHours) }
+        // Audit + wipe-status tables shared with the worker.
+        { name: 'Audit__StorageAccount', value: storageProc.name }
+        { name: 'Audit__TableName',      value: auditTableName }
+        { name: 'WipeStatus__TableName', value: wipeStatusTableName }
+        // Microsoft Graph wipe call (privileged).
+        { name: 'Graph__TenantId', value: graphTenantId }
+        { name: 'Graph__ManagedIdentityClientId', value: uamiWipe.properties.clientId }
+        { name: 'Wipe__AllowedGroupId',     value: allowedGroupId }
+        { name: 'Wipe__KeepEnrollmentData', value: string(keepEnrollmentData) }
+        { name: 'Wipe__KeepUserData',       value: string(keepUserData) }
+      ]
+    }
+  }
+}
+
+// Wipe-runner identity → full data-plane on its OWN runtime storage account
+// (Functions host requirement for lease/secrets/scale).
+resource raWipeBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageWipe.id, uamiWipe.id, 'blob')
+  scope: storageWipe
+  properties: { roleDefinitionId: blobDataOwner, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raWipeQueue 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageWipe.id, uamiWipe.id, 'queue')
+  scope: storageWipe
+  properties: { roleDefinitionId: queueDataContributor, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raWipeTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageWipe.id, uamiWipe.id, 'table')
+  scope: storageWipe
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// Wipe-runner identity → consumer (full Queue Data Contributor) on the
+// wipe-action queue resource only. Scoping to the queue resource (not the
+// account) keeps least privilege.
+resource raWipeActionConsume 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(wipeActionQueue.id, uamiWipe.id, 'queue-consume')
+  scope: wipeActionQueue
+  properties: { roleDefinitionId: queueDataContributor, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// Wipe-runner identity → Blob Data Contributor on the ledger container
+// (Reserve/MarkIssued/MarkFailed live in WipeActionRunner which now runs here).
+resource raWipeLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(ledgerContainer.id, uamiWipe.id, 'blob-ledger')
+  scope: ledgerContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// Wipe-runner identity → Table Data Contributor on the worker's storage
+// account so it can write audit events and upsert wipe-status rows.
+// Account-scoped because both tables (auditevents + wipestatus) live there
+// and getting individual table-scope is messier with current ARM resource model.
+resource raWipeTableOnProc 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageProc.id, uamiWipe.id, 'table-shared')
+  scope: storageProc
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
 output webAppName string = funcWeb.name
 output webAppHostname string = funcWeb.properties.defaultHostName
 output procAppName string = funcProc.name
 output procAppHostname string = funcProc.properties.defaultHostName
+output wipeAppName string = funcWipe.name
+output wipeAppHostname string = funcWipe.properties.defaultHostName
 output uamiWorkerClientId string = uami.properties.clientId
 output uamiWorkerPrincipalId string = uami.properties.principalId
 output uamiWebClientId string = uamiWeb.properties.clientId
 output uamiWebPrincipalId string = uamiWeb.properties.principalId
+output uamiWipeClientId string = uamiWipe.properties.clientId
+output uamiWipePrincipalId string = uamiWipe.properties.principalId
 output storageWebAccount string = storageWeb.name
 output storageProcAccount string = storageProc.name
+output storageWipeAccount string = storageWipe.name
 output wipeQueueName string = wipeQueueName
+output wipeActionQueueName string = wipeActionQueueName
 output ledgerContainerName string = ledgerContainerName

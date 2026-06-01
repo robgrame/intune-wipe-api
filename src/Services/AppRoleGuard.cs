@@ -20,6 +20,7 @@ public static class AppRoleGuard
 {
     public const string Web  = "web";
     public const string Proc = "proc";
+    public const string Wipe = "wipe";
 
     /// <summary>Reads the App__Role environment variable (set by Bicep per Function App).</summary>
     public static string CurrentRole =>

@@ -93,6 +93,15 @@ public static class AuditEvents
     public const string ActionDispatchCompleted      = "action.dispatch.completed";       // runner returned OK
     public const string ActionDispatchRunnerFailed   = "action.dispatch.runner-failed";   // runner threw
 
+    // Per-capability dedicated runner queue (out-of-process isolation).
+    // Worker's WipeForwardingRunner enqueues here; WipeActionConsumerFunction on
+    // the wipe-runner Function App consumes and invokes the real WipeActionRunner.
+    public const string ActionForwarded              = "action.forwarded";                // worker → wipe-runner queue
+    public const string WipeActionConsumed           = "wipe.action.consumed";            // wipe app received envelope
+    public const string WipeActionInvalidEnvelope    = "wipe.action.invalid-envelope";    // JSON malformed on wipe app
+    public const string WipeActionCompleted          = "wipe.action.completed";           // runner returned OK on wipe app
+    public const string WipeActionRunnerFailed       = "wipe.action.runner-failed";       // runner threw on wipe app
+
     // Shared property keys (use these consistently so KQL is uniform)
     public static class Prop
     {
