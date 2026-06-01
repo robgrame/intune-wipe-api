@@ -27,9 +27,9 @@ namespace IntuneWipeApi.Functions;
 /// Authorization: function-level key (per the rest of the API). On top of
 /// the function-key barrier, the endpoints are gated by
 /// <c>Idempotency:AdminApiEnabled=true</c> in app settings — set false in
-/// production to keep them off by default. The <see cref="AppRoleGuard.Web"/>
-/// constraint ensures these endpoints are only live on the public web app,
-/// not on the worker.
+/// production to keep them off by default. These endpoints are only deployed
+/// to the Web Function App (artifact isolation — the Proc and Wipe assemblies
+/// do not contain this Function class).
 /// </para>
 /// </summary>
 public sealed class WipeLedgerAdminFunction

@@ -198,7 +198,7 @@ public static class HostBuilderExtensions
                 }
                 client.CreateIfNotExists();
                 return new WipeStatusTracker(client,
-                    sp.GetRequiredService<GraphWipeService>(),
+                    sp.GetService<GraphWipeService>(),
                     sp.GetRequiredService<AuditService>(),
                     cfg,
                     sp.GetRequiredService<ILogger<WipeStatusTracker>>());
@@ -206,7 +206,7 @@ public static class HostBuilderExtensions
             catch
             {
                 return new WipeStatusTracker(null,
-                    sp.GetRequiredService<GraphWipeService>(),
+                    sp.GetService<GraphWipeService>(),
                     sp.GetRequiredService<AuditService>(),
                     cfg,
                     sp.GetRequiredService<ILogger<WipeStatusTracker>>());

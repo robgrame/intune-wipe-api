@@ -9,8 +9,9 @@ namespace IntuneWipeApi.Functions;
 
 /// <summary>
 /// Dedicated per-capability consumer for the <c>wipe-action</c> Storage Queue.
-/// Runs ONLY on the wipe-runner Function App (<see cref="AppRoleGuard.Wipe"/>),
-/// which holds the privileged Graph identity. The worker app's
+/// Runs ONLY on the wipe-runner Function App (artifact isolation — this
+/// Function class is deployed only to the Wipe assembly), which holds the
+/// privileged Graph identity. The Proc app's
 /// <see cref="WipeForwardingRunner"/> is the only producer.
 /// </summary>
 /// <remarks>

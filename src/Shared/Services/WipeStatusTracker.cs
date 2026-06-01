@@ -60,12 +60,12 @@ public sealed class WipeStatusTracker
     };
 
     private readonly TableClient? _table;
-    private readonly GraphWipeService _graph;
+    private readonly GraphWipeService? _graph;
     private readonly AuditService _audit;
     private readonly ILogger<WipeStatusTracker> _log;
     private readonly int _pollMaxAgeHours;
 
-    public WipeStatusTracker(TableClient? table, GraphWipeService graph, AuditService audit,
+    public WipeStatusTracker(TableClient? table, GraphWipeService? graph, AuditService audit,
         IConfiguration cfg, ILogger<WipeStatusTracker> log)
     {
         _table = table;
@@ -172,6 +172,15 @@ public sealed class WipeStatusTracker
     public async Task PollOneAsync(TableEntity row, CancellationToken ct)
     {
         if (_table is null) return;
+        if (_graph is null)
+        {
+            // Defensive guard: PollOneAsync is only called by the Proc poller,
+            // which must register GraphWipeService. Web never calls this method
+            // (it only reads via GetStatusAsync) and therefore doesn't need Graph.
+            throw new InvalidOperationException(
+                "WipeStatusTracker.PollOneAsync requires GraphWipeService. " +
+                "Register it in the host via services.AddGraphWipe().");
+        }
 
         var correlationId    = row.PartitionKey;
         var managedDeviceId  = row.GetString("ManagedDeviceId") ?? string.Empty;

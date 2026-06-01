@@ -22,7 +22,6 @@ public static class AuditEvents
     public const string RequestAccepted = "wipe.request.accepted";
 
     // Web-side denials (HTTP path)
-    public const string DeniedAppRoleMismatch        = "wipe.denied.app-role-mismatch";
     public const string DeniedReplay                 = "wipe.denied.replay";
     public const string DeniedCertValidation         = "wipe.denied.cert-validation";
     public const string DeniedCertBindingMissing     = "wipe.denied.cert-binding-missing";
@@ -112,8 +111,6 @@ public static class AuditEvents
         public const string ManagedDeviceId  = "managedDeviceId";
         public const string CertThumbprint   = "certThumbprint";
         public const string Reason           = "reason";
-        public const string ExpectedRole     = "expectedRole";
-        public const string ActualRole       = "actualRole";
         public const string BoundDeviceId    = "boundDeviceId";
         public const string OriginalCorrelationId = "originalCorrelationId";
         public const string ExceptionType    = "exceptionType";
