@@ -333,6 +333,8 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AzureWebJobsStorage__clientId',    value: uamiWeb.properties.clientId }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
         { name: 'AZURE_CLIENT_ID', value: uamiWeb.properties.clientId }
+        // Azure App Configuration (centralized settings, with refresh sentinel).
+        { name: 'AppConfig__Endpoint', value: appConfig.properties.endpoint }
         // App role guard: in-code defense-in-depth (AzureWebJobs disabled is unreliable on isolated).
         { name: 'App__Role', value: 'web' }
         // Selector: keep only the HTTP trigger on this app.
@@ -424,6 +426,8 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AzureWebJobsStorage__clientId',    value: uami.properties.clientId }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
         { name: 'AZURE_CLIENT_ID', value: uami.properties.clientId }
+        // Azure App Configuration (centralized settings, with refresh sentinel).
+        { name: 'AppConfig__Endpoint', value: appConfig.properties.endpoint }
         // App role guard: in-code defense-in-depth (AzureWebJobs disabled is unreliable on isolated).
         { name: 'App__Role', value: 'proc' }
         // Selector: keep only the queue trigger on this app.
@@ -583,6 +587,8 @@ resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AzureWebJobsStorage__clientId',    value: uamiWipe.properties.clientId }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
         { name: 'AZURE_CLIENT_ID', value: uamiWipe.properties.clientId }
+        // Azure App Configuration (centralized settings, with refresh sentinel).
+        { name: 'AppConfig__Endpoint', value: appConfig.properties.endpoint }
         // App role guard: this app is the dedicated wipe-runner.
         { name: 'App__Role', value: 'wipe' }
         // Selector: keep ONLY the wipe-action consumer enabled here.
@@ -741,6 +747,64 @@ resource raAaTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (en
   scope: storageProc
   properties: { roleDefinitionId: tableDataContributor, principalId: automationAccount.identity.principalId, principalType: 'ServicePrincipal' }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Azure App Configuration — centralized config store for all three Function
+// Apps. Each app reads:
+//   * keys with NO label  → shared defaults
+//   * keys with label = App__Role (web|proc|wipe) → per-app overrides
+// A 'Sentinel' key (bumped manually or via deploy) triggers reload of any
+// refresh-flagged key (e.g. Wipe:ActionType) without restarting the workers.
+// Local auth is disabled — all access via UAMI + App Configuration Data Reader.
+// ───────────────────────────────────────────────────────────────────────────
+var appConfigName = toLower('${namePrefix}-appcfg-${suffix}')
+
+resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' = {
+  name: appConfigName
+  location: location
+  sku: { name: 'standard' }
+  properties: {
+    disableLocalAuth: true
+    publicNetworkAccess: 'Enabled'
+    enablePurgeProtection: false
+    // Required so ARM-driven Microsoft.AppConfiguration/.../keyValues
+    // resources (declared below) can write through ARM even though
+    // local data-plane auth is disabled.
+    dataPlaneProxy: {
+      authenticationMode: 'Pass-through'
+      privateLinkDelegation: 'Disabled'
+    }
+  }
+}
+
+// Seed keys are provisioned OUT-OF-BAND (CLI/portal) — not via Bicep —
+// because data-plane ARM writes against a store with disableLocalAuth=true
+// require the deployer to have App Configuration Data Owner with full RBAC
+// propagation, which is brittle in CI. Bootstrap is performed by
+// `tools/seed-appconfig.ps1` (or the equivalent `az appconfig kv set`
+// commands documented in the README). Bicep owns ONLY the store + RBAC.
+
+// RBAC: App Configuration Data Reader for every consumer identity.
+var appConfigDataReader = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '516239f1-63e1-4d78-a4de-a74fb236a071')
+
+resource raAppConfigWeb 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appConfig.id, uamiWeb.id, 'appcfg-reader')
+  scope: appConfig
+  properties: { roleDefinitionId: appConfigDataReader, principalId: uamiWeb.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAppConfigProc 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appConfig.id, uami.id, 'appcfg-reader')
+  scope: appConfig
+  properties: { roleDefinitionId: appConfigDataReader, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAppConfigWipe 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appConfig.id, uamiWipe.id, 'appcfg-reader')
+  scope: appConfig
+  properties: { roleDefinitionId: appConfigDataReader, principalId: uamiWipe.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+output appConfigName string = appConfig.name
+output appConfigEndpoint string = appConfig.properties.endpoint
 
 output webAppName string = funcWeb.name
 output webAppHostname string = funcWeb.properties.defaultHostName

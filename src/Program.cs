@@ -5,8 +5,10 @@ using Azure.Storage.Blobs;
 using Azure.Storage.Queues;
 using IntuneWipeApi.Actions;
 using IntuneWipeApi.Actions.Runners;
+using IntuneWipeApi.Middleware;
 using IntuneWipeApi.Services;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration.AzureAppConfiguration;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,10 +17,68 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 
 var host = new HostBuilder()
-    .ConfigureFunctionsWebApplication(b => b.UseDefaultWorkerMiddleware())
-    .ConfigureAppConfiguration(c => c.AddEnvironmentVariables())
+    .ConfigureFunctionsWebApplication(b =>
+    {
+        b.UseDefaultWorkerMiddleware();
+        // Triggers Azure App Configuration sentinel-based refresh per invocation.
+        // Cheap (provider polls only when SetRefreshInterval has elapsed).
+        b.UseMiddleware<AppConfigRefreshMiddleware>();
+    })
+    .ConfigureAppConfiguration((ctx, c) =>
+    {
+        c.AddEnvironmentVariables();
+
+        // ──────────────────────────────────────────────────────────────────
+        // Azure App Configuration (centralized, multi-app settings store).
+        //
+        // Activation is opt-in via AppConfig__Endpoint (set on each Function
+        // App by Bicep). When set, this source is layered AFTER environment
+        // variables, so an explicit app setting still wins — this lets us
+        // override anything per-app for incident response without touching
+        // App Config.
+        //
+        // Selection model:
+        //   1) load all keys with NO label (shared defaults across apps)
+        //   2) load all keys with label = App__Role (web|proc|wipe) so each
+        //      app can override the shared value (e.g. AzureWebJobs.* selectors,
+        //      App role guard, app-specific timer crons).
+        //
+        // Refresh: a sentinel key 'Sentinel' is registered with a 30-second
+        // poll. Bumping its value triggers a reload of any key flagged with
+        // refreshAll, e.g. Wipe:ActionType (the runbook routing switch).
+        // ──────────────────────────────────────────────────────────────────
+        var preliminary = c.Build();
+        var endpoint = preliminary["AppConfig:Endpoint"];
+        if (!string.IsNullOrWhiteSpace(endpoint))
+        {
+            var role = preliminary["App:Role"] ?? "web";
+            var clientId = preliminary["Graph:ManagedIdentityClientId"]
+                ?? preliminary["AZURE_CLIENT_ID"];
+            var credOpts = new Azure.Identity.DefaultAzureCredentialOptions();
+            if (!string.IsNullOrWhiteSpace(clientId)) credOpts.ManagedIdentityClientId = clientId;
+            var cred = new Azure.Identity.DefaultAzureCredential(credOpts);
+
+            c.AddAzureAppConfiguration(opt =>
+            {
+                opt.Connect(new Uri(endpoint), cred)
+                   .Select(keyFilter: "*")                 // shared keys (no label)
+                   .Select(keyFilter: "*", labelFilter: role)  // per-app overrides
+                   .ConfigureRefresh(r => r
+                        .Register("Sentinel", refreshAll: true)
+                        .SetRefreshInterval(TimeSpan.FromSeconds(30)));
+
+                // Capture the refresher so the worker middleware can poll it on
+                // every invocation. IConfigurationRefresherProvider DI scanning
+                // does not reliably find providers registered via the host's
+                // ConfigureAppConfiguration in the Functions isolated worker.
+                AppConfigRefresherHolder.Instance = opt.GetRefresher();
+            });
+        }
+    })
     .ConfigureServices((ctx, services) =>
     {
+        // Explicitly register middleware so the worker resolves it cleanly.
+        services.AddSingleton<AppConfigRefreshMiddleware>();
         services.AddLogging();
         // Worker telemetry pipeline. Adaptive sampling is DISABLED so that
         // security/audit customEvents emitted via AuditService are NEVER dropped.

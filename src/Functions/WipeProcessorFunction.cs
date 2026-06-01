@@ -1,5 +1,6 @@
 using System.Text.Json;
 using IntuneWipeApi.Actions;
+using IntuneWipeApi.Middleware;
 using IntuneWipeApi.Models;
 using IntuneWipeApi.Services;
 using Microsoft.Azure.Functions.Worker;
@@ -36,7 +37,7 @@ public sealed class WipeProcessorFunction
     private readonly ActionDispatchEnqueuer _enqueuer;
     private readonly AuditService _audit;
     private readonly ILogger<WipeProcessorFunction> _log;
-    private readonly string _actionType;
+    private readonly IConfiguration _cfg;
 
     public WipeProcessorFunction(ActionDispatchEnqueuer enqueuer, AuditService audit,
         IConfiguration cfg, ILogger<WipeProcessorFunction> log)
@@ -44,12 +45,28 @@ public sealed class WipeProcessorFunction
         _enqueuer = enqueuer;
         _audit = audit;
         _log = log;
-        // Config-driven routing: setting Wipe:ActionType="wipe-runbook" flips
-        // the entire wipe pipeline to the Automation runbook executor without
-        // any code change. Default keeps the canonical Function-App path.
-        _actionType = string.IsNullOrWhiteSpace(cfg["Wipe:ActionType"])
+        _cfg = cfg;
+    }
+
+    // Read per-invocation so a hot-reloaded value from Azure App Configuration
+    // (triggered by bumping the 'Sentinel' key) actually flips routing on the
+    // next message without restarting the worker. We invoke TryRefreshAsync
+    // here directly (rather than relying on a worker middleware) because
+    // wiring middleware via b.UseMiddleware<T>() inside
+    // ConfigureFunctionsWebApplication did not reliably fire for queue triggers
+    // in dotnet-isolated 10.0. Calling on the captured refresher is cheap:
+    // the provider polls the store at most once per SetRefreshInterval (30s).
+    private async Task<string> CurrentActionTypeAsync(CancellationToken ct)
+    {
+        var refresher = AppConfigRefresherHolder.Instance;
+        if (refresher is not null)
+        {
+            try { await refresher.TryRefreshAsync(ct); }
+            catch (Exception ex) { _log.LogWarning(ex, "AppConfig refresh failed; using cached value."); }
+        }
+        return string.IsNullOrWhiteSpace(_cfg["Wipe:ActionType"])
             ? DefaultWipeActionType
-            : cfg["Wipe:ActionType"]!.Trim();
+            : _cfg["Wipe:ActionType"]!.Trim();
     }
 
     [Function("WipeProcessor")]
@@ -87,7 +104,7 @@ public sealed class WipeProcessorFunction
         var envelope = new ActionDispatchMessage
         {
             SchemaVersion   = "1",
-            ActionType      = _actionType,
+            ActionType      = await CurrentActionTypeAsync(ct),
             CorrelationId   = msg.CorrelationId,
             DeviceName      = msg.DeviceName,
             EntraDeviceId   = msg.EntraDeviceId,

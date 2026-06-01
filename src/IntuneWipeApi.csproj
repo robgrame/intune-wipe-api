@@ -21,6 +21,7 @@
     <PackageReference Include="Azure.Storage.Queues" Version="12.26.0" />
     <PackageReference Include="Azure.Storage.Blobs" Version="12.26.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.0.0" />
     <PackageReference Include="Microsoft.Graph" Version="6.1.0" />
   </ItemGroup>
   <ItemGroup>
