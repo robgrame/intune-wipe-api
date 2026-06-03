@@ -7,6 +7,21 @@
 
 > Soluzione serverless end-to-end per consentire ad un dispositivo Windows gestito da Intune di richiedere in autonomia il proprio **wipe (factory reset)**, con difesa in profondità: certificato dispositivo Intune (mTLS), allow-list nativa via gruppo Entra ID, validazione di ownership, esecuzione asincrona via coda e audit completo.
 
+> ⚠️ **Architecture update (current canonical state)** — questo README descrive ancora la fase intermedia *plug-in routing*. La codebase deployata oggi (`tools/Deploy-IntuneDeviceActions.ps1`) ha completato tre refactor successivi:
+>
+> | Aspetto | Vecchio | **Attuale** |
+> |---|---|---|
+> | Solution / progetti | `IntuneWipeApi*` | `IntuneDeviceActions*` |
+> | Function App names | `intwipe-{web,proc,wipe}-*` | `idactions-{web,proc,wipe}-*` |
+> | HTTP endpoint | `/api/wipe`, `/api/wipe/status`, `/api/wipe-ledger/*` | `/api/actions/wipe`, `/api/actions/status`, `/api/action-ledger/*` |
+> | Function names | `WipeRequest`, `WipeProcessor`, `WipeStatus`, `WipeLedgerAdmin`, `WipeStatusPoller` | `ActionRequest`, `RequestIntake`, `ActionStatus`, `ActionLedger_Get`/`ActionLedger_Reset`, `ActionStatusPoller` |
+> | Code di disaccoppiamento | **Azure Storage Queue** (`wipe-requests`, `action-dispatch`, `wipe-action`) | **Azure Service Bus** (`action-requests`, `action-dispatch`, `wipe-action`) — managed identity, dead-letter nativo, lock renewal |
+> | Hosting plan | 3× EP1 ElasticPremium | **1× EP1 (Web, mTLS always-on) + 2× FC1 Flex Consumption (Proc + Wipe, scale-to-zero)** |
+> | Ledger blob | `wipe-ledger` | `action-ledger` |
+> | Configurazione | App Settings / Bicep | **Azure App Configuration** centralizzata + refresh sentinel per app |
+>
+> Per il deploy end-to-end consulta direttamente `tools/Deploy-IntuneDeviceActions.ps1` e `tools/Grant-GraphPermissions.ps1`. La tabella Componenti e i diagrammi sotto verranno aggiornati in un Phase E commit dedicato.
+
 ## Indice
 
 - [Architettura](#architettura)
