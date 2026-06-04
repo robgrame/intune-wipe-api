@@ -27,6 +27,9 @@ public static class AuditEvents
     public const string DeniedCertBindingMissing     = "wipe.denied.cert-binding-missing";
     public const string DeniedCertDeviceMismatch     = "wipe.denied.cert-device-mismatch";
     public const string DeniedPayloadInvalid         = "wipe.denied.payload-invalid";
+    // Action-type allowlist denial: caller hit /api/actions/{actionType} with
+    // an actionType that is not enabled in Actions:AllowedTypes config.
+    public const string DeniedActionTypeNotAllowed   = "action.denied.type-not-allowed";
 
     // Worker-side denials (queue path)
     public const string DeniedDeviceResolveFailed        = "wipe.denied.device-resolve-failed";

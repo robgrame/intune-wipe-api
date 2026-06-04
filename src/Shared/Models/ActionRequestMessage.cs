@@ -4,6 +4,15 @@ namespace IntuneDeviceActions.Models;
 
 public sealed class ActionRequestMessage
 {
+    /// <summary>
+    /// Pluggable action discriminator (matches an <c>IActionRunner.Type</c>
+    /// downstream). Stamped by <c>ActionRequestFunction</c> from the HTTP route
+    /// template and propagated end-to-end so the intake/dispatch pipeline can
+    /// route any registered action without code changes. Nullable to stay
+    /// compatible with in-flight messages produced before this field existed:
+    /// consumers fall back to a configured default when missing.
+    /// </summary>
+    [JsonPropertyName("actionType")]       public string? ActionType { get; set; }
     [JsonPropertyName("deviceName")]       public string DeviceName { get; set; } = string.Empty;
     [JsonPropertyName("entraDeviceId")]    public string EntraDeviceId { get; set; } = string.Empty;
     [JsonPropertyName("intuneDeviceId")]   public string IntuneDeviceId { get; set; } = string.Empty;

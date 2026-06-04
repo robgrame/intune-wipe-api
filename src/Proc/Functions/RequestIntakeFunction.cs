@@ -10,29 +10,34 @@ using Microsoft.Extensions.Logging;
 namespace IntuneDeviceActions.Functions;
 
 /// <summary>
-/// Thin <b>dispatcher</b> over the <c>wipe-requests</c> storage queue.
+/// Thin <b>dispatcher</b> over the <c>action-requests</c> Service Bus queue.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Historically this function executed the entire wipe pipeline inline. As of
-/// the plug-in refactor it ONLY:
+/// Action-agnostic intake: takes an <see cref="ActionRequestMessage"/> (any
+/// type), wraps it inside an <see cref="ActionDispatchMessage"/> envelope
+/// stamping the <c>ActionType</c> propagated by the HTTP intake, and enqueues
+/// it on the <c>action-dispatch</c> queue. The concrete behaviour is then
+/// selected by <see cref="ActionDispatchFunction"/> against the
+/// <see cref="ActionRunnerRegistry"/>.
 /// </para>
 /// <list type="number">
 ///   <item>guards the app role (this must be the worker app);</item>
-///   <item>parses the wipe-specific <see cref="ActionRequestMessage"/> intake payload;</item>
-///   <item>wraps it inside an <see cref="ActionDispatchMessage"/> envelope with <c>ActionType="wipe"</c>;</item>
+///   <item>parses the intake payload;</item>
+///   <item>resolves the ActionType (message → config fallback) so messages
+///         produced by older Web instances without an ActionType field still
+///         route to <c>"wipe"</c>;</item>
+///   <item>wraps it into an <see cref="ActionDispatchMessage"/> envelope;</item>
 ///   <item>enqueues the envelope on the <c>action-dispatch</c> queue.</item>
 /// </list>
 /// <para>
-/// The actual Graph wipe + idempotency + nudges + status-tracker init live in
-/// <see cref="Actions.Runners.WipeActionRunner"/> and are invoked by
-/// <see cref="ActionDispatchFunction"/>. This keeps the intake/queue layer
-/// stable while new capabilities are added behind <see cref="IActionRunner"/>.
+/// To add a new capability: register a new <see cref="IActionRunner"/>; the
+/// intake / queue / dispatcher don't change.
 /// </para>
 /// </remarks>
 public sealed class RequestIntakeFunction
 {
-    private const string DefaultWipeActionType = "wipe";
+    private const string DefaultActionType = "wipe";
 
     private readonly ActionDispatchEnqueuer _enqueuer;
     private readonly AuditService _audit;
@@ -48,16 +53,15 @@ public sealed class RequestIntakeFunction
         _cfg = cfg;
     }
 
-    // Read per-invocation so a hot-reloaded value from Azure App Configuration
-    // (triggered by bumping the 'Sentinel' key) actually flips routing on the
-    // next message without restarting the worker. We invoke TryRefreshAsync
-    // here directly (rather than relying on a worker middleware) because
-    // wiring middleware via b.UseMiddleware<T>() inside
-    // ConfigureFunctionsWebApplication did not reliably fire for queue triggers
-    // in dotnet-isolated 10.0. Calling on the captured refresher is cheap:
-    // the provider polls the store at most once per SetRefreshInterval (30s).
-    private async Task<string> CurrentActionTypeAsync(CancellationToken ct)
+    // Refreshes App Configuration so a flipped Wipe:ActionType (legacy override
+    // used when the message does not carry one) is picked up without a restart.
+    // The actual resolution order is: 1) the message's own ActionType, 2) the
+    // configured legacy default, 3) the hard-coded "wipe" constant.
+    private async Task<string> ResolveActionTypeAsync(string? messageActionType, CancellationToken ct)
     {
+        if (!string.IsNullOrWhiteSpace(messageActionType))
+            return messageActionType.Trim();
+
         var refresher = AppConfigRefresherHolder.Instance;
         if (refresher is not null)
         {
@@ -73,9 +77,10 @@ public sealed class RequestIntakeFunction
             _log.LogTrace("AppConfig refresher not captured — running with startup snapshot only.");
         }
         var actionType = string.IsNullOrWhiteSpace(_cfg["Wipe:ActionType"])
-            ? DefaultWipeActionType
+            ? DefaultActionType
             : _cfg["Wipe:ActionType"]!.Trim();
-        _log.LogDebug("Resolved ActionType={ActionType} (raw cfg value='{Raw}')", actionType, _cfg["Wipe:ActionType"] ?? "(null)");
+        _log.LogDebug("Resolved ActionType={ActionType} from config fallback (raw cfg value='{Raw}')",
+            actionType, _cfg["Wipe:ActionType"] ?? "(null)");
         return actionType;
     }
 
@@ -87,26 +92,33 @@ public sealed class RequestIntakeFunction
         var msg = JsonSerializer.Deserialize<ActionRequestMessage>(messageJson)
             ?? throw new InvalidOperationException("Empty/invalid Service Bus payload");
 
+        var actionType = await ResolveActionTypeAsync(msg.ActionType, ct);
+
         using var scope = _log.BeginScope(new Dictionary<string, object>
         {
             ["CorrelationId"]  = msg.CorrelationId,
+            ["ActionType"]     = actionType,
             ["DeviceName"]     = msg.DeviceName,
             ["EntraDeviceId"]  = msg.EntraDeviceId,
             ["IntuneDeviceId"] = msg.IntuneDeviceId,
         });
 
-        _log.LogInformation("Dispatching wipe request for {Device} to action runner", msg.DeviceName);
+        _log.LogInformation("Dispatching '{ActionType}' request for {Device} to action runner",
+            actionType, msg.DeviceName);
 
         var envelope = new ActionDispatchMessage
         {
             SchemaVersion   = "1",
-            ActionType      = await CurrentActionTypeAsync(ct),
+            ActionType      = actionType,
             CorrelationId   = msg.CorrelationId,
             DeviceName      = msg.DeviceName,
             EntraDeviceId   = msg.EntraDeviceId,
             IntuneDeviceId  = msg.IntuneDeviceId,
             RequestedAt     = msg.RequestedAt,
-            FailOnError     = true, // wipe is security-critical → honour queue retries
+            // Default to "let the queue retry me" on failure. Security-critical
+            // actions (wipe) should leave this on; opt-out best-effort actions
+            // (e.g. a future "sync") can flip it from their producer.
+            FailOnError     = true,
             Payload         = JsonSerializer.SerializeToElement(msg, ActionDispatchEnqueuer.JsonOptions),
         };
 

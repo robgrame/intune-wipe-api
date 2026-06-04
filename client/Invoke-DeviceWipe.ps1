@@ -8,7 +8,16 @@
     typed "WIPE" confirmation + checkbox), then calls the wipe API
     authenticating with the Intune-issued device certificate.
 .PARAMETER ApiUrl
-    Full URL to the wipe endpoint, e.g. https://func.example.net/api/wipe
+    Full URL to the actions endpoint, e.g. https://func.example.net/api/actions
+    (canonical body-based endpoint). The legacy URL
+    https://func.example.net/api/actions/wipe is still supported by the
+    backend as an alias and can be used unchanged by older Intune
+    deployments while the rolling upgrade completes.
+.PARAMETER ActionType
+    Action discriminator stamped into the request body so the backend can
+    route to the right IActionRunner. Defaults to "wipe". To request a
+    different action (once a corresponding runner is enabled server-side)
+    pass e.g. -ActionType sync.
 .PARAMETER CertificateThumbprint
     Thumbprint of the client certificate in Cert:\LocalMachine\My (or CurrentUser\My).
 .PARAMETER CertificateSubjectLike
@@ -36,6 +45,7 @@ param(
     [string] $CertificateSubjectLike,
     [string] $CertificateIssuerLike,
     [Parameter(Mandatory = $false)] [string] $FunctionKey,
+    [Parameter(Mandatory = $false)] [string] $ActionType = 'wipe',
     [switch] $Silent,
     [switch] $DryRun
 )
@@ -102,6 +112,7 @@ $cert = Get-ClientCertificate -Thumb $CertificateThumbprint -SubjectLike $Certif
 Write-Host ("Using cert: {0} (thumb {1})" -f $cert.Subject, $cert.Thumbprint) -ForegroundColor Cyan
 
 $body = @{
+    actionType     = $ActionType
     deviceName     = $deviceName
     entraDeviceId  = $entraId
     intuneDeviceId = $enrollmentId   # legacy field name; backend uses it only for audit, resolves real id via EntraDeviceId
