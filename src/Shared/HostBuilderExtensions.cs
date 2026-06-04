@@ -352,8 +352,27 @@ public static class HostBuilderExtensions
         var serviceName = $"idactions-{role}";
         var instanceId = Environment.MachineName;
 
+        // The Functions worker ASP.NET Core integration (used by the Web host
+        // via ConfigureFunctionsWebApplication) auto-wires the *cross-cutting*
+        // Azure Monitor exporter (services.UseAzureMonitorExporter) at startup
+        // when APPLICATIONINSIGHTS_CONNECTION_STRING is set. The Azure Monitor
+        // SDK throws NotSupportedException if we then also register the
+        // signal-specific .AddAzureMonitorTraceExporter on the TracerProvider:
+        // "Signal-specific AddAzureMonitorExporter / UseAzureMonitor methods
+        //  and the cross-cutting UseAzureMonitorExporter method being invoked
+        //  on the same IServiceCollection is not supported."
+        // Probe IServiceCollection BEFORE we call AddOpenTelemetry — any
+        // pre-existing Azure.Monitor.OpenTelemetry.* registration means the
+        // cross-cutting exporter is already in place and our shared
+        // TracerProvider sources will be exported through it.
+        var crossCuttingExporterAlreadyWired = services.Any(d =>
+            (d.ServiceType.FullName?.StartsWith("Azure.Monitor.OpenTelemetry.", StringComparison.Ordinal) ?? false)
+            || (d.ImplementationType?.FullName?.StartsWith("Azure.Monitor.OpenTelemetry.", StringComparison.Ordinal) ?? false));
+
         services.AddOpenTelemetry()
-            .WithTracing(tracing => tracing
+            .WithTracing(tracing =>
+            {
+                tracing
                 .SetResourceBuilder(ResourceBuilder.CreateDefault()
                     .AddService(
                         serviceName: serviceName,
@@ -393,15 +412,20 @@ public static class HostBuilderExtensions
                         req?.RequestUri is not null
                         && !string.Equals(req.RequestUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(req.RequestUri.Host, "127.0.0.1", StringComparison.Ordinal);
-                })
-                .AddAzureMonitorTraceExporter(o =>
+                });
+
+                if (!crossCuttingExporterAlreadyWired)
                 {
-                    var conn = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
-                    if (!string.IsNullOrWhiteSpace(conn))
+                    tracing.AddAzureMonitorTraceExporter(o =>
                     {
-                        o.ConnectionString = conn;
-                    }
-                }));
+                        var conn = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
+                        if (!string.IsNullOrWhiteSpace(conn))
+                        {
+                            o.ConnectionString = conn;
+                        }
+                    });
+                }
+            });
 
         return services;
     }
