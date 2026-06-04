@@ -115,6 +115,15 @@ param idempotencyAdminApiEnabled bool = true
 @description('Provisions an Azure Automation Account + PowerShell 7.2 runbook (Invoke-DeviceWipe) as an alternative wipe executor.')
 param enableRunbookVariant bool = true
 
+// ── Storage network access (operator IPs whitelisted on the public endpoint)
+// Storage stays publicNetworkAccess=Enabled with defaultAction=Deny: only
+// Azure trusted services (bypass=AzureServices) and listed operator IPs can
+// reach the data plane. The Function Apps reach storage via the
+// AzureServices bypass today; the private endpoints below provide the
+// future path for VNet-integrated clients.
+@description('IPv4 addresses or CIDR ranges of operators / build agents allowed to reach the storage data plane through the public endpoint (e.g. local dev box, GitHub Actions). Empty disables the IP allow-list (only AzureServices bypass remains).')
+param storageAllowedIpRanges array = []
+
 // ── Naming ───────────────────────────────────────────────────────────────────
 var suffix = uniqueString(resourceGroup().id)
 var stWebRaw  = toLower('${namePrefix}stw${suffix}')
@@ -171,6 +180,12 @@ resource storageWeb 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: false
     publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices, Logging, Metrics'
+      ipRules: [for ip in storageAllowedIpRanges: { value: ip, action: 'Allow' }]
+      virtualNetworkRules: []
+    }
   }
 }
 
@@ -185,6 +200,12 @@ resource storageProc 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: false
     publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices, Logging, Metrics'
+      ipRules: [for ip in storageAllowedIpRanges: { value: ip, action: 'Allow' }]
+      virtualNetworkRules: []
+    }
   }
 }
 
@@ -199,6 +220,12 @@ resource storageWipe 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: false
     publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices, Logging, Metrics'
+      ipRules: [for ip in storageAllowedIpRanges: { value: ip, action: 'Allow' }]
+      virtualNetworkRules: []
+    }
   }
 }
 
@@ -866,6 +893,187 @@ resource raAppConfigWipe 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Private Endpoint infrastructure (Option A — dormant PE)
+//
+// Adds a minimal VNet + private DNS zones + private endpoints for the three
+// storage accounts so the platform is ready to flip into a fully private
+// network topology. The Function Apps are NOT VNet-integrated in this phase:
+// they continue to reach storage via the public endpoint with
+// publicNetworkAccess=Enabled + defaultAction=Deny + bypass=AzureServices +
+// IP whitelist for operator access. To activate the PE path, a future change
+// would (a) add a delegated integration subnet per Function App,
+// (b) set virtualNetworkSubnetId + vnetRouteAllEnabled on each funcApp, and
+// (c) flip storage publicNetworkAccess=Disabled. Costs at rest: 1 VNet
+// (free) + 6 PEs (one NIC each) + 4 private DNS zones (free) + 4 DNS links
+// (free).
+// ─────────────────────────────────────────────────────────────────────────────
+var vnetName     = toLower('${namePrefix}-vnet-${suffix}')
+var peSubnetName = 'pe-subnet'
+
+resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: [ '10.20.0.0/24' ] }
+    subnets: [
+      {
+        name: peSubnetName
+        properties: {
+          addressPrefix: '10.20.0.0/27'
+          // PE subnet must allow NIC creation by the PE control plane.
+          privateEndpointNetworkPolicies: 'Disabled'
+          privateLinkServiceNetworkPolicies: 'Enabled'
+        }
+      }
+    ]
+  }
+}
+
+resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
+  parent: vnet
+  name: peSubnetName
+}
+
+// One private DNS zone per storage subresource we PE. Storage suffix is
+// 'core.windows.net' in commercial Azure; environment().suffixes.storage
+// resolves to the right value per cloud (e.g. core.chinacloudapi.cn).
+resource pdnsBlob 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.blob.${environment().suffixes.storage}'
+  location: 'global'
+}
+resource pdnsFile 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.file.${environment().suffixes.storage}'
+  location: 'global'
+}
+resource pdnsQueue 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.queue.${environment().suffixes.storage}'
+  location: 'global'
+}
+resource pdnsTable 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.table.${environment().suffixes.storage}'
+  location: 'global'
+}
+
+resource pdnsBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: pdnsBlob
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: { virtualNetwork: { id: vnet.id }, registrationEnabled: false }
+}
+resource pdnsFileLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: pdnsFile
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: { virtualNetwork: { id: vnet.id }, registrationEnabled: false }
+}
+resource pdnsQueueLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: pdnsQueue
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: { virtualNetwork: { id: vnet.id }, registrationEnabled: false }
+}
+resource pdnsTableLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: pdnsTable
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: { virtualNetwork: { id: vnet.id }, registrationEnabled: false }
+}
+
+// Web's storage is an EP1 Function content store and uses all 4 subresources
+// (blob+queue+table for AzureWebJobsStorage host lease/control/state plus
+// file for WEBSITE_CONTENTSHARE). One PE per subresource — Azure Storage
+// requires distinct PEs per group ID.
+var webPeSubresources = [ 'blob', 'file', 'queue', 'table' ]
+resource peStorageWeb 'Microsoft.Network/privateEndpoints@2024-01-01' = [for sub in webPeSubresources: {
+  name: '${stWebName}-pe-${sub}'
+  location: location
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: sub
+        properties: {
+          privateLinkServiceId: storageWeb.id
+          groupIds: [ sub ]
+        }
+      }
+    ]
+  }
+}]
+
+// Proc and Wipe Flex Consumption deployment storages use blob only (the
+// app-package container). No file/queue/table needed.
+resource peStorageProcBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
+  name: '${stProcName}-pe-blob'
+  location: location
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: 'blob'
+        properties: {
+          privateLinkServiceId: storageProc.id
+          groupIds: [ 'blob' ]
+        }
+      }
+    ]
+  }
+}
+resource peStorageWipeBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
+  name: '${stWipeName}-pe-blob'
+  location: location
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: 'blob'
+        properties: {
+          privateLinkServiceId: storageWipe.id
+          groupIds: [ 'blob' ]
+        }
+      }
+    ]
+  }
+}
+
+// DNS zone groups auto-register the PE's private IP into the correct DNS
+// zone so resolution from inside the linked VNet returns the PE IP instead
+// of the public storage IP. Maps subresource → DNS zone in a single place.
+var subresourceToDnsZoneId = {
+  blob:  pdnsBlob.id
+  file:  pdnsFile.id
+  queue: pdnsQueue.id
+  table: pdnsTable.id
+}
+resource peStorageWebDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = [for (sub, i) in webPeSubresources: {
+  parent: peStorageWeb[i]
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: sub, properties: { privateDnsZoneId: subresourceToDnsZoneId[sub] } }
+    ]
+  }
+}]
+resource peStorageProcBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+  parent: peStorageProcBlob
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: 'blob', properties: { privateDnsZoneId: pdnsBlob.id } }
+    ]
+  }
+}
+resource peStorageWipeBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+  parent: peStorageWipeBlob
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: 'blob', properties: { privateDnsZoneId: pdnsBlob.id } }
+    ]
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Outputs
 // ─────────────────────────────────────────────────────────────────────────────
 output appConfigName     string = appConfig.name
@@ -902,3 +1110,16 @@ output wipeDeployContainer string = wipeDeployContainer
 output automationAccountName string = enableRunbookVariant ? automationAccount.name : ''
 output runbookName           string = enableRunbookVariant ? runbookName : ''
 output automationPrincipalId string = enableRunbookVariant ? automationAccount.identity.principalId : ''
+
+output vnetName              string = vnet.name
+output peSubnetName          string = peSubnetName
+output privateDnsZoneBlob    string = pdnsBlob.name
+output privateDnsZoneFile    string = pdnsFile.name
+output privateDnsZoneQueue   string = pdnsQueue.name
+output privateDnsZoneTable   string = pdnsTable.name
+output peStorageProcBlobId   string = peStorageProcBlob.id
+output peStorageWipeBlobId   string = peStorageWipeBlob.id
+output peStorageWebBlobId    string = peStorageWeb[0].id
+output peStorageWebFileId    string = peStorageWeb[1].id
+output peStorageWebQueueId   string = peStorageWeb[2].id
+output peStorageWebTableId   string = peStorageWeb[3].id

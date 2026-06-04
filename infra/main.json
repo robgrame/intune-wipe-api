@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "2264094958632659046"
+      "templateHash": "4145108345714753356"
     }
   },
   "parameters": {
@@ -227,6 +227,13 @@
       "metadata": {
         "description": "Provisions an Azure Automation Account + PowerShell 7.2 runbook (Invoke-DeviceWipe) as an alternative wipe executor."
       }
+    },
+    "storageAllowedIpRanges": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "IPv4 addresses or CIDR ranges of operators / build agents allowed to reach the storage data plane through the public endpoint (e.g. local dev box, GitHub Actions). Empty disables the IP allow-list (only AzureServices bypass remains)."
+      }
     }
   },
   "variables": {
@@ -260,7 +267,21 @@
     "sbDataReceiver": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')]",
     "automationAccountName": "[toLower(format('{0}-aa-{1}', parameters('namePrefix'), variables('suffix')))]",
     "runbookName": "Invoke-DeviceWipe",
-    "appConfigDataReader": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '516239f1-63e1-4d78-a4de-a74fb236a071')]"
+    "appConfigDataReader": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '516239f1-63e1-4d78-a4de-a74fb236a071')]",
+    "vnetName": "[toLower(format('{0}-vnet-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "peSubnetName": "pe-subnet",
+    "webPeSubresources": [
+      "blob",
+      "file",
+      "queue",
+      "table"
+    ],
+    "subresourceToDnsZoneId": {
+      "blob": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
+      "file": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.file.{0}', environment().suffixes.storage))]",
+      "queue": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.queue.{0}', environment().suffixes.storage))]",
+      "table": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.table.{0}', environment().suffixes.storage))]"
+    }
   },
   "resources": [
     {
@@ -303,7 +324,22 @@
         "allowBlobPublicAccess": false,
         "allowSharedKeyAccess": false,
         "publicNetworkAccess": "Enabled",
-        "supportsHttpsTrafficOnly": true
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "copy": [
+            {
+              "name": "ipRules",
+              "count": "[length(parameters('storageAllowedIpRanges'))]",
+              "input": {
+                "value": "[parameters('storageAllowedIpRanges')[copyIndex('ipRules')]]",
+                "action": "Allow"
+              }
+            }
+          ],
+          "defaultAction": "Deny",
+          "bypass": "AzureServices, Logging, Metrics",
+          "virtualNetworkRules": []
+        }
       }
     },
     {
@@ -320,7 +356,22 @@
         "allowBlobPublicAccess": false,
         "allowSharedKeyAccess": false,
         "publicNetworkAccess": "Enabled",
-        "supportsHttpsTrafficOnly": true
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "copy": [
+            {
+              "name": "ipRules",
+              "count": "[length(parameters('storageAllowedIpRanges'))]",
+              "input": {
+                "value": "[parameters('storageAllowedIpRanges')[copyIndex('ipRules')]]",
+                "action": "Allow"
+              }
+            }
+          ],
+          "defaultAction": "Deny",
+          "bypass": "AzureServices, Logging, Metrics",
+          "virtualNetworkRules": []
+        }
       }
     },
     {
@@ -337,7 +388,22 @@
         "allowBlobPublicAccess": false,
         "allowSharedKeyAccess": false,
         "publicNetworkAccess": "Enabled",
-        "supportsHttpsTrafficOnly": true
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "copy": [
+            {
+              "name": "ipRules",
+              "count": "[length(parameters('storageAllowedIpRanges'))]",
+              "input": {
+                "value": "[parameters('storageAllowedIpRanges')[copyIndex('ipRules')]]",
+                "action": "Allow"
+              }
+            }
+          ],
+          "defaultAction": "Deny",
+          "bypass": "AzureServices, Logging, Metrics",
+          "virtualNetworkRules": []
+        }
       }
     },
     {
@@ -618,10 +684,6 @@
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName')), '2023-01-31').clientId]"
             },
             {
-              "name": "ServiceBus__FullyQualifiedNamespace",
-              "value": "[format('{0}.servicebus.windows.net', variables('sbNamespaceName'))]"
-            },
-            {
               "name": "ServiceBus__ActionRequestsQueue",
               "value": "[parameters('actionRequestsQueueName')]"
             },
@@ -829,10 +891,6 @@
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
             },
             {
-              "name": "ServiceBus__FullyQualifiedNamespace",
-              "value": "[format('{0}.servicebus.windows.net', variables('sbNamespaceName'))]"
-            },
-            {
               "name": "ServiceBus__ActionRequestsQueue",
               "value": "[parameters('actionRequestsQueueName')]"
             },
@@ -1008,10 +1066,6 @@
             {
               "name": "ServiceBus__clientId",
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').clientId]"
-            },
-            {
-              "name": "ServiceBus__FullyQualifiedNamespace",
-              "value": "[format('{0}.servicebus.windows.net', variables('sbNamespaceName'))]"
             },
             {
               "name": "ServiceBus__WipeActionQueue",
@@ -1619,6 +1673,263 @@
         "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-01-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.20.0.0/24"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('peSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.20.0.0/27",
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('privatelink.blob.{0}', environment().suffixes.storage)]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('privatelink.file.{0}', environment().suffixes.storage)]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('privatelink.queue.{0}', environment().suffixes.storage)]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('privatelink.table.{0}', environment().suffixes.storage)]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('privatelink.blob.{0}', environment().suffixes.storage), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('privatelink.file.{0}', environment().suffixes.storage), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.file.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('privatelink.queue.{0}', environment().suffixes.storage), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.queue.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('privatelink.table.{0}', environment().suffixes.storage), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.table.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "peStorageWeb",
+        "count": "[length(variables('webPeSubresources'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('peSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('webPeSubresources')[copyIndex()]]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+              "groupIds": [
+                "[variables('webPeSubresources')[copyIndex()]]"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}-pe-blob', variables('stProcName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('peSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "blob",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+              "groupIds": [
+                "blob"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}-pe-blob', variables('stWipeName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('peSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "blob",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+              "groupIds": [
+                "blob"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "peStorageWebDns",
+        "count": "[length(variables('webPeSubresources'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[copyIndex()]), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('webPeSubresources')[copyIndex()]]",
+            "properties": {
+              "privateDnsZoneId": "[variables('subresourceToDnsZoneId')[variables('webPeSubresources')[copyIndex()]]]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.file.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.queue.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.table.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[copyIndex()]))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-blob', variables('stProcName')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "blob",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stProcName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-01-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-blob', variables('stWipeName')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "blob",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stWipeName')))]"
+      ]
     }
   ],
   "outputs": {
@@ -1733,6 +2044,54 @@
     "automationPrincipalId": {
       "type": "string",
       "value": "[if(parameters('enableRunbookVariant'), reference(resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName')), '2023-11-01', 'full').identity.principalId, '')]"
+    },
+    "vnetName": {
+      "type": "string",
+      "value": "[variables('vnetName')]"
+    },
+    "peSubnetName": {
+      "type": "string",
+      "value": "[variables('peSubnetName')]"
+    },
+    "privateDnsZoneBlob": {
+      "type": "string",
+      "value": "[format('privatelink.blob.{0}', environment().suffixes.storage)]"
+    },
+    "privateDnsZoneFile": {
+      "type": "string",
+      "value": "[format('privatelink.file.{0}', environment().suffixes.storage)]"
+    },
+    "privateDnsZoneQueue": {
+      "type": "string",
+      "value": "[format('privatelink.queue.{0}', environment().suffixes.storage)]"
+    },
+    "privateDnsZoneTable": {
+      "type": "string",
+      "value": "[format('privatelink.table.{0}', environment().suffixes.storage)]"
+    },
+    "peStorageProcBlobId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stProcName')))]"
+    },
+    "peStorageWipeBlobId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stWipeName')))]"
+    },
+    "peStorageWebBlobId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[0]))]"
+    },
+    "peStorageWebFileId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[1]))]"
+    },
+    "peStorageWebQueueId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[2]))]"
+    },
+    "peStorageWebTableId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[3]))]"
     }
   }
 }

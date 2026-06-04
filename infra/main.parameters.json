@@ -49,6 +49,11 @@
     },
     "keepUserData": {
       "value": false
+    },
+    "storageAllowedIpRanges": {
+      "value": [
+        "151.59.113.209"
+      ]
     }
   }
 }
