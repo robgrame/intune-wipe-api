@@ -87,7 +87,7 @@ function Send-UserNotification {
 function Start-StatusPoller {
     <#
         Trigger the SYSTEM-context StatusPoller scheduled task with the
-        live correlationId so it can begin polling GET /wipe/status/{id}
+        live correlationId so it can begin polling GET /actions/status/{id}
         for the operator-facing live progress UI. Best-effort: a failure
         here must not bubble up — the wipe itself was already accepted.
     #>

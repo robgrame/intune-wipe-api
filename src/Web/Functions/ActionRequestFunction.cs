@@ -13,17 +13,11 @@ using Microsoft.Extensions.Logging;
 namespace IntuneDeviceActions.Functions;
 
 /// <summary>
-/// Public HTTP endpoint exposing two co-existing routes:
-/// <list type="bullet">
-///   <item><description><b>Canonical</b>: <c>POST /api/actions</c> — the
-///   action discriminator must be supplied as the <c>actionType</c> property
-///   on the JSON body. Preferred by all new clients.</description></item>
-///   <item><description><b>Legacy alias</b>: <c>POST /api/actions/{actionType}</c>
-///   — kept so the already-deployed v1.0.x <c>.intunewin</c> client (which
-///   was hard-coded to <c>/api/actions/wipe</c>) keeps working untouched
-///   during the rolling upgrade. When both the URL segment and the body
-///   carry an <c>actionType</c>, the body value wins.</description></item>
-/// </list>
+/// Public HTTP endpoint <c>POST /api/actions</c>. The action discriminator
+/// must be supplied as the <c>actionType</c> property on the JSON body —
+/// no action type appears in the URL. This keeps the HTTP surface flat and
+/// open-ended: adding a new action does not require a new route.
+///
 /// Validates the client (cert + payload + replay headers + cert↔device
 /// binding), enforces the operational allowlist
 /// (<c>Actions:AllowedTypes</c>), and publishes an action request on the
@@ -36,14 +30,12 @@ namespace IntuneDeviceActions.Functions;
 /// </summary>
 public sealed class ActionRequestFunction
 {
-    // Regex for actionType route values: lowercase letters/digits/dashes,
-    // 1..32 chars, must start with a letter. Mirrored on the legacy route
-    // template via the {actionType:regex(...)} constraint so unknown shapes
-    // return 404
-    // before any handler code runs.
-    private const string ActionTypeRoutePattern = "^[a-z][a-z0-9-]{0,31}$";
+    // Regex applied to the body's actionType: lowercase letters/digits/dashes,
+    // 1..32 chars, must start with a letter. Defends the Service Bus side
+    // against malformed/oversized discriminators leaking out of validation.
+    private const string ActionTypePattern = "^[a-z][a-z0-9-]{0,31}$";
     private static readonly System.Text.RegularExpressions.Regex ActionTypeRegex =
-        new(ActionTypeRoutePattern, System.Text.RegularExpressions.RegexOptions.Compiled);
+        new(ActionTypePattern, System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private readonly ClientCertValidator _cert;
     private readonly ReplayProtector _replay;
@@ -64,39 +56,20 @@ public sealed class ActionRequestFunction
     }
 
     [Function("ActionRequest")]
-    public Task<IActionResult> Run(
+    public async Task<IActionResult> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "actions")] HttpRequest req,
         CancellationToken ct)
-        => HandleAsync(req, routeActionType: null, ct);
-
-    /// <summary>
-    /// Legacy alias kept for the v1.0.x <c>.intunewin</c> client that POSTs to
-    /// <c>/api/actions/wipe</c>. New clients should target the canonical
-    /// <c>/api/actions</c> endpoint above and supply <c>actionType</c> in the
-    /// JSON body. When both are present, the body value wins so a forward-
-    /// looking client can override the URL-baked default.
-    /// </summary>
-    [Function("ActionRequestLegacy")]
-    public Task<IActionResult> RunLegacy(
-        [HttpTrigger(AuthorizationLevel.Function, "post",
-            Route = "actions/{actionType:regex(^[a-z][a-z0-9-]{{0,31}}$)}")] HttpRequest req,
-        string actionType,
-        CancellationToken ct)
-        => HandleAsync(req, routeActionType: actionType, ct);
-
-    private async Task<IActionResult> HandleAsync(HttpRequest req, string? routeActionType, CancellationToken ct)
     {
         var correlationId = Guid.NewGuid().ToString("N");
         using var scope = _log.BeginScope(new Dictionary<string, object>
         {
             ["CorrelationId"] = correlationId,
-            // ActionType from the route (if any). The body may override later;
-            // we log the final resolved type at enqueue time.
-            ["ActionType"]    = routeActionType ?? "",
+            // ActionType is filled in once the body has been parsed and validated.
+            ["ActionType"]    = "",
         });
 
-        _log.LogDebug("ActionRequest received: corr={Corr} routeActionType={RouteActionType} method={Method} path={Path} contentLength={Len}",
-            correlationId, routeActionType ?? "(none)", req.Method, req.Path.Value, req.ContentLength ?? -1);
+        _log.LogDebug("ActionRequest received: corr={Corr} method={Method} path={Path} contentLength={Len}",
+            correlationId, req.Method, req.Path.Value, req.ContentLength ?? -1);
         if (_log.IsEnabled(LogLevel.Trace))
         {
             // VERBOSE: dump headers (excluding Authorization / Cookie). Only emitted
@@ -111,15 +84,15 @@ public sealed class ActionRequestFunction
         // 0.1) Inbound audit — emitted BEFORE any validation so even rejected/
         // malformed attempts leave a forensic trace. Captures the request
         // envelope (caller IP, UA, content type, size) without touching the body.
-        // ActionType at this stage is whatever the route surfaced; the body may
-        // override below.
+        // ActionType is left blank here and re-emitted in RequestAccepted once
+        // the body has been parsed and resolved.
         var callerIp = req.HttpContext.Connection.RemoteIpAddress?.ToString()
             ?? req.Headers["X-Forwarded-For"].ToString();
         var userAgent = req.Headers.UserAgent.ToString();
         _audit.TrackEvent(AuditEvents.RequestReceived, new Dictionary<string, string>
         {
             [AuditEvents.Prop.CorrelationId] = correlationId,
-            [AuditEvents.Prop.ActionType]    = routeActionType ?? "",
+            [AuditEvents.Prop.ActionType]    = "",
             [AuditEvents.Prop.CallerIp]      = callerIp ?? "",
             [AuditEvents.Prop.UserAgent]     = userAgent ?? "",
             [AuditEvents.Prop.ContentType]   = req.ContentType ?? "",
@@ -210,13 +183,9 @@ public sealed class ActionRequestFunction
             });
         }
 
-        // 3.5) Resolve the final action type. Body wins over route so a
-        // forward-looking client hitting the legacy URL can still override
-        // the URL-baked default. If both are absent (canonical endpoint with
-        // no body actionType) the allowlist check below rejects with 400.
-        var actionType = !string.IsNullOrWhiteSpace(body.ActionType)
-            ? body.ActionType.Trim()
-            : routeActionType;
+        // 3.5) Resolve the action type from the body. Empty/missing falls
+        // through to the allowlist check below which rejects with 400.
+        var actionType = body.ActionType?.Trim();
 
         // 3.6) Allowlist gate. Format: CSV in Actions:AllowedTypes (e.g.
         // "wipe,sync"); default "wipe" preserves the original single-purpose

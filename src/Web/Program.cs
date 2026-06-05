@@ -23,7 +23,7 @@ var host = new HostBuilder()
         services.AddSingleton<DeviceDirectoryResolver>();
         services.AddIdempotency();                // admin reset endpoint
         services.AddActionRequestSender();     // enqueue to proc
-        services.AddActionStatusTracker();          // GET /api/wipe/status reads it (Graph not used on this code path)
+        services.AddActionStatusTracker();          // GET /api/actions/status reads it (Graph not used on this code path)
     })
     .Build();
 

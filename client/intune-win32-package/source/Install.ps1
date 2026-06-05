@@ -12,7 +12,7 @@
     Intended to be invoked by the Intune Win32 install command, e.g.:
 
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 `
-          -ApiUrl "https://func.example.net/api/actions/wipe" `
+          -ApiUrl "https://func.example.net/api/actions" `
           -FunctionKey "abcd...==" `
           -CertificateIssuerLike "*MSLABS-SUBCA01*;*MSLABS-ADCS*"
 #>
@@ -217,7 +217,7 @@ try {
     Write-Host "  Registered scheduled task: $TaskFull (SYSTEM, on-demand, executable by Users)"
 
     # --- Scheduled task: StatusPoller (SYSTEM, on-demand, executable by Users) ---
-    # Runs Watch-WipeStatus.ps1, which polls GET /api/actions/wipe/status/{corrId}
+    # Runs Watch-WipeStatus.ps1, which polls GET /api/actions/status/{corrId}
     # using the device cert (mTLS) every 60s for up to 30 min and writes
     # %ProgramData%\IntuneWipeClient\status\<corrId>.json. The user-side
     # Launch-Wipe.ps1 launches Show-WipeProgressDialog which tails that

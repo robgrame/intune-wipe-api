@@ -4,8 +4,8 @@
     SYSTEM-context status poller for an in-flight wipe request.
 .DESCRIPTION
     Triggered on-demand by Invoke-WipeFromTask.ps1 right after a wipe is
-    accepted by the API. Polls GET {ApiBase}/wipe/status/{correlationId}
-    with the device client certificate (mTLS) every -IntervalSeconds (default
+    accepted by the API. Polls GET {ApiBase}/status/{correlationId} with
+    the device client certificate (mTLS) every -IntervalSeconds (default
     60) for up to -MaxMinutes (default 30) or until the server reports a
     terminal state. Persists a fresh snapshot to:
 
@@ -103,8 +103,9 @@ function Get-ClientCertificate {
 
 function Get-StatusUrl {
     param([string]$ApiUrl, [string]$CorrelationId)
-    # Config stores the wipe endpoint (e.g. https://host/api/actions/wipe). We just
-    # need to append /status/{id} regardless of any trailing slash.
+    # Config stores the canonical actions endpoint (e.g.
+    # https://host/api/actions). Append /status/{id} to derive the status
+    # endpoint regardless of any trailing slash.
     $trimmed = $ApiUrl.TrimEnd('/')
     return ("{0}/status/{1}" -f $trimmed, $CorrelationId)
 }

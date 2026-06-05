@@ -327,7 +327,7 @@ function Invoke-SmokeTest {
     $webApp  = Get-FunctionAppByRole 'web'
     $webHost = (& az functionapp show -g $ResourceGroup -n $webApp `
         --query defaultHostName -o tsv --only-show-errors).Trim()
-    $url = "https://$webHost/api/actions/wipe"
+    $url = "https://$webHost/api/actions"
     Write-Host "    POST $url  (no client cert - expecting 401/403)"
     try {
         Invoke-WebRequest -Uri $url -Method POST -Body '{}' `
@@ -390,7 +390,7 @@ function Show-PostDeployNotes {
     if ($webApp) {
         $webHost = (& az functionapp show -g $ResourceGroup -n $webApp `
             --query defaultHostName -o tsv --only-show-errors).Trim()
-        Write-Host "     client\Invoke-DeviceWipe.ps1 -ApiUrl https://$webHost/api/actions/wipe ..." -ForegroundColor Gray
+        Write-Host "     client\Invoke-DeviceWipe.ps1 -ApiUrl https://$webHost/api/actions ..." -ForegroundColor Gray
     }
     Write-Host ''
     Write-Host '====================================================' -ForegroundColor Magenta

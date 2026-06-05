@@ -127,7 +127,7 @@ Service Bus o al Bicep. Eventi audit dedicati: `action.dispatch.enqueued`,
 | 4g | **`WipeAction`** (Service Bus trigger, non esposta) | **Wipe** | Consumer dedicato che risolve direttamente `WipeActionRunner`. È l'unica function deployata sull'app privilegiata. |
 | 4h | **`WipeActionRunner`** (`IActionRunner`, Type=`wipe`) | **Wipe** | Logica wipe vera: risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`, inizializza status tracker, esegue nudges (sync + reboot) best-effort. |
 | 5 | **Blob container** `action-ledger` | Wipe | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche con retry at-least-once. |
-| 6a | **`ActionStatus`** (HTTP Function) | **Web** | `GET /api/actions/status/{correlationId}` (canonico, action-agnostic) + `GET /api/actions/wipe/status/{correlationId}` (alias legacy per il client v1.0.x). In mTLS, ritorna la proiezione della tabella `actionstatus`. Binding cert↔device anti-IDOR. |
+| 6a | **`ActionStatus`** (HTTP Function) | **Web** | `GET /api/actions/status/{correlationId}` (canonico, action-agnostic). In mTLS, ritorna la proiezione della tabella `actionstatus`. Binding cert↔device anti-IDOR. |
 | 6b | **`ActionStatusPoller`** (Timer trigger) | **Proc** | Poller schedulato che interroga Graph per `actionState` dei wipe non terminali e aggiorna `actionstatus` + audit. |
 | 6c | **`ActionLedger_Get`** / **`ActionLedger_Reset`** (HTTP) | **Web** | Endpoint SecOps `GET`/`POST /api/action-ledger/{intuneDeviceId}[/reset]` per ispezionare/resettare il ledger. Gated da `Idempotency:AdminApiEnabled` (off di default). |
 | 7 | **Tre User-Assigned Managed Identity** | — | `idactions-uami-web` (no Graph privilegiato), `idactions-uami` (worker/proc, `Device.Read.All` + `DeviceManagementManagedDevices.Read.All` per il poller), `idactions-uami-wipe` (l'unica con i consent Graph distruttivi). |
@@ -222,7 +222,7 @@ Lo script:
 4. `az deployment group create` di `infra/main.bicep` con `main.parameters.json`.
 5. Restart + zip-deploy delle 3 Function App (`az functionapp deployment source config-zip`, funziona sia su EP1 sia su Flex).
 6. **Grant automatico** dei ruoli Microsoft Graph alle due UAMI (`tools/Grant-GraphPermissions.ps1`).
-7. Smoke test: Web `POST /api/actions/wipe` (atteso 403 senza cert = mTLS attivo), root Flex (atteso 200).
+7. Smoke test: Web `POST /api/actions` (atteso 403 senza cert = mTLS attivo), root Flex (atteso 200).
 8. Stampa link e azioni manuali residue (cert/CA chain verify, AppConfig seed opzionale, test client end-to-end).
 
 Flag di skip per re-run incrementali: `-SkipPrereqInstall -SkipPublish -SkipInfra -SkipDeploy -SkipGraphConsent -NoSmokeTest`.
@@ -274,7 +274,7 @@ eseguibile manualmente:
 
 ```powershell
 .\client\Invoke-DeviceWipe.ps1 `
-  -ApiUrl       'https://<webHost>.azurewebsites.net/api/actions/wipe' `
+  -ApiUrl       'https://<webHost>.azurewebsites.net/api/actions' `
   -CertificateSubjectLike '*Intune MDM Device CA*' `
   -FunctionKey  '<function-key>'
 ```
@@ -291,9 +291,11 @@ Usa `-Silent` per scenari unattended (test).
 
 ## API
 
-### `POST /api/actions/wipe`
+### `POST /api/actions`
 
-Headers obbligatori:
+Endpoint **action-agnostic**: il tipo di azione viaggia nel body come
+`actionType` (default `"wipe"` se omesso, validato contro
+`Actions:AllowedTypes`). Headers obbligatori:
 
 - `x-functions-key: <function-key>`
 - `Content-Type: application/json`
@@ -305,6 +307,7 @@ Body:
 
 ```json
 {
+  "actionType": "wipe",
   "deviceName": "DESKTOP-ABC",
   "entraDeviceId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "intuneDeviceId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
@@ -332,11 +335,6 @@ la richiesta, l'`actionType` è opaco al chiamante. Stessi requisiti di auth di
 `POST /api/actions` (mTLS + binding cert↔device): un device può leggere solo il
 proprio esito. Esiti possibili: `404` (nessuna riga), `401` (cert/binding),
 `403` (riga di un altro device).
-
-> **Alias legacy**: `GET /api/actions/wipe/status/{correlationId}` resta attivo per
-> compatibilità con il client v1.0.x già distribuito (il `Watch-WipeStatus.ps1`
-> appende `/status/{id}` a un `ApiUrl` wipe-specifico). Tutti i nuovi client devono
-> usare il path canonico sopra.
 
 ### `GET` / `POST /api/action-ledger/{intuneDeviceId}[/reset]`
 

@@ -8,11 +8,11 @@
     typed "WIPE" confirmation + checkbox), then calls the wipe API
     authenticating with the Intune-issued device certificate.
 .PARAMETER ApiUrl
-    Full URL to the actions endpoint, e.g. https://func.example.net/api/actions
-    (canonical body-based endpoint). The legacy URL
-    https://func.example.net/api/actions/wipe is still supported by the
-    backend as an alias and can be used unchanged by older Intune
-    deployments while the rolling upgrade completes.
+    Full URL to the canonical actions endpoint, e.g.
+    https://func.example.net/api/actions. The endpoint is action-agnostic:
+    the action discriminator is sent in the request body via -ActionType
+    below, so the same URL handles wipe, sync, and any future action types
+    enabled server-side via the Actions:AllowedTypes allowlist.
 .PARAMETER ActionType
     Action discriminator stamped into the request body so the backend can
     route to the right IActionRunner. Defaults to "wipe". To request a
@@ -35,7 +35,7 @@
       X-Request-Timestamp : current UTC time in ISO-8601 (server tolerates ±5 min by default)
       X-Request-Nonce     : a fresh GUID per request
 .EXAMPLE
-    .\Invoke-DeviceWipe.ps1 -ApiUrl https://func.example.net/api/wipe `
+    .\Invoke-DeviceWipe.ps1 -ApiUrl https://func.example.net/api/actions `
         -CertificateSubjectLike '*Intune MDM Device CA*' -FunctionKey '...'
 #>
 [CmdletBinding()]
