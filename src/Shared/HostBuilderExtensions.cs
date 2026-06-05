@@ -226,8 +226,19 @@ public static class HostBuilderExtensions
                     cfg,
                     sp.GetRequiredService<ILogger<ActionStatusTracker>>());
             }
-            catch
+            catch (Exception ex)
             {
+                // Fail-soft: if TableClient init fails (RBAC missing, network
+                // path blocked, account unreachable...) the tracker becomes
+                // disabled and GET /api/actions/status returns 503. Without
+                // this log the failure mode is invisible to operators; we
+                // surface it as a warning with the configured account name so
+                // the misconfiguration is obvious in App Insights.
+                var log = sp.GetService<ILogger<ActionStatusTracker>>();
+                log?.LogWarning(ex,
+                    "ActionStatusTracker disabled: failed to initialize TableClient for account='{Account}' table='{Table}'. " +
+                    "GET /api/actions/status will return 503 on this role until the underlying issue is fixed (likely RBAC or network).",
+                    account ?? "(none)", tableName);
                 return new ActionStatusTracker(null, probes,
                     sp.GetRequiredService<AuditService>(),
                     cfg,

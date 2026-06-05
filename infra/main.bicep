@@ -1213,22 +1213,28 @@ resource peStorageWeb 'Microsoft.Network/privateEndpoints@2024-01-01' = [for sub
 
 // Proc and Wipe Flex Consumption deployment storages use blob only (the
 // app-package container). No file/queue/table needed.
-resource peStorageProcBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: '${stProcName}-pe-blob'
+// storageProc hosts the shared audit + status tables and the idempotency
+// ledger blob. Web (VNet-integrated) reaches them via private endpoints —
+// one per subresource. blob+table+queue cover the current data plane;
+// adding `file` is unnecessary because no Function App uses storageProc as
+// its WEBSITE_CONTENTSHARE backing.
+var procPeSubresources = [ 'blob', 'table', 'queue' ]
+resource peStorageProc 'Microsoft.Network/privateEndpoints@2024-01-01' = [for sub in procPeSubresources: {
+  name: '${stProcName}-pe-${sub}'
   location: location
   properties: {
     subnet: { id: peSubnet.id }
     privateLinkServiceConnections: [
       {
-        name: 'blob'
+        name: sub
         properties: {
           privateLinkServiceId: storageProc.id
-          groupIds: [ 'blob' ]
+          groupIds: [ sub ]
         }
       }
     ]
   }
-}
+}]
 resource peStorageWipeBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${stWipeName}-pe-blob'
   location: location
@@ -1264,15 +1270,15 @@ resource peStorageWebDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroup
     ]
   }
 }]
-resource peStorageProcBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
-  parent: peStorageProcBlob
+resource peStorageProcDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = [for (sub, i) in procPeSubresources: {
+  parent: peStorageProc[i]
   name: 'default'
   properties: {
     privateDnsZoneConfigs: [
-      { name: 'blob', properties: { privateDnsZoneId: pdnsBlob.id } }
+      { name: sub, properties: { privateDnsZoneId: subresourceToDnsZoneId[sub] } }
     ]
   }
-}
+}]
 resource peStorageWipeBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
   parent: peStorageWipeBlob
   name: 'default'
@@ -1334,7 +1340,9 @@ output privateDnsZoneBlob    string = pdnsBlob.name
 output privateDnsZoneFile    string = pdnsFile.name
 output privateDnsZoneQueue   string = pdnsQueue.name
 output privateDnsZoneTable   string = pdnsTable.name
-output peStorageProcBlobId   string = peStorageProcBlob.id
+output peStorageProcBlobId   string = peStorageProc[0].id
+output peStorageProcTableId  string = peStorageProc[1].id
+output peStorageProcQueueId  string = peStorageProc[2].id
 output peStorageWipeBlobId   string = peStorageWipeBlob.id
 output peStorageWebBlobId    string = peStorageWeb[0].id
 output peStorageWebFileId    string = peStorageWeb[1].id

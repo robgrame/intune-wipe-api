@@ -53,7 +53,7 @@ param(
     [Parameter()] [string] $ResourceGroup = 'rg-idactions-dev',
     [Parameter()] [string] $FunctionAppName = 'idactions-web-kngz2afknjtjk',
     [Parameter()] [string] $MetaJsonPath = (Join-Path $PSScriptRoot 'smoke-pki\meta.json'),
-    [Parameter()] [ValidateSet('Status','Request')] [string] $Mode = 'Status'
+    [Parameter()] [ValidateSet('Status','Request','RoundTrip')] [string] $Mode = 'RoundTrip'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,28 +98,36 @@ $headers = @{
     'X-Request-Nonce'      = [Guid]::NewGuid().ToString()
 }
 
+function Invoke-StatusCheck {
+    param([string]$Corr, [hashtable]$BaseHeaders, [string]$ExpectedHttpHint)
+    # Status doesn't enforce replay headers but accepts them; always re-roll
+    # the nonce so a previous send doesn't trip the in-memory replay cache.
+    $hdrs = $BaseHeaders.Clone()
+    $hdrs['X-Request-Timestamp'] = (Get-Date).ToUniversalTime().ToString('o')
+    $hdrs['X-Request-Nonce']     = [Guid]::NewGuid().ToString()
+    $uri = "https://$FunctionAppHost/api/actions/status/$Corr"
+    Write-Host "==> GET $uri  ($ExpectedHttpHint)"
+    try {
+        $resp = Invoke-WebRequest -Uri $uri -Method Get -Headers $hdrs -Certificate $leaf -UseBasicParsing
+        Write-Host "RESULT: HTTP $($resp.StatusCode)" -ForegroundColor Green
+        Write-Host "Body:   $($resp.Content)"
+        return [pscustomobject]@{ Status = [int]$resp.StatusCode; Body = $resp.Content }
+    }
+    catch {
+        $sc  = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { -1 }
+        $msg = if ($_.ErrorDetails)       { $_.ErrorDetails.Message }               else { $_.Exception.Message }
+        $color = if ($sc -in 404, 200) { 'Green' } else { 'Red' }
+        Write-Host "RESULT: HTTP $sc" -ForegroundColor $color
+        Write-Host "Body:   $msg"
+        return [pscustomobject]@{ Status = $sc; Body = $msg }
+    }
+}
+
 switch ($Mode) {
     'Status' {
         $corr = [Guid]::NewGuid().ToString('N')
-        $uri  = "https://$FunctionAppHost/api/actions/status/$corr"
-        Write-Host "==> GET $uri  (expect 404 not-found)"
-        try {
-            $resp = Invoke-WebRequest -Uri $uri -Method Get -Headers $headers -Certificate $leaf -UseBasicParsing
-            Write-Host "RESULT: HTTP $($resp.StatusCode)  body=$($resp.Content)"
-        }
-        catch {
-            $sc = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { -1 }
-            $msg = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-            if ($sc -eq 404) {
-                Write-Host "RESULT: HTTP 404 — chain+EKU+binding all OK, no row for $corr (expected)." -ForegroundColor Green
-                Write-Host "Body:   $msg"
-            }
-            else {
-                Write-Host "RESULT: HTTP $sc" -ForegroundColor Red
-                Write-Host "Body:   $msg"
-                throw
-            }
-        }
+        $r = Invoke-StatusCheck -Corr $corr -BaseHeaders $headers -ExpectedHttpHint 'expect 404 not-found'
+        if ($r.Status -ne 404) { throw "Expected 404, got $($r.Status)" }
     }
     'Request' {
         $uri  = "https://$FunctionAppHost/api/actions"
@@ -143,6 +151,75 @@ switch ($Mode) {
             Write-Host "RESULT: HTTP $sc" -ForegroundColor Red
             Write-Host "Body:   $msg"
             throw
+        }
+    }
+    'RoundTrip' {
+        # 1) Status on a random correlationId — must return 404 (proves auth+tracker read path).
+        $randomCorr = [Guid]::NewGuid().ToString('N')
+        Write-Host ""
+        Write-Host "── STEP 1/3: Status on unknown corr (expect 404) ───────────────"
+        $r1 = Invoke-StatusCheck -Corr $randomCorr -BaseHeaders $headers -ExpectedHttpHint 'expect 404'
+        if ($r1.Status -ne 404) { throw "STEP 1 failed: expected 404, got $($r1.Status)" }
+
+        # 2) Submit a real action.
+        Write-Host ""
+        Write-Host "── STEP 2/3: POST /api/actions (expect 202) ───────────────────"
+        $uri  = "https://$FunctionAppHost/api/actions"
+        $body = @{
+            actionType     = 'wipe'
+            deviceName     = "smoke-test-$($meta.entraDeviceId.Substring(0,8))"
+            entraDeviceId  = $meta.entraDeviceId
+            intuneDeviceId = $meta.entraDeviceId
+        } | ConvertTo-Json -Compress
+        $postHdrs = $headers.Clone()
+        $postHdrs['Content-Type'] = 'application/json'
+        Write-Host "==> POST $uri"
+        Write-Host "    body: $body"
+        $postResp = Invoke-WebRequest -Uri $uri -Method Post -Headers $postHdrs -Certificate $leaf -Body $body -UseBasicParsing
+        if ([int]$postResp.StatusCode -ne 202) { throw "STEP 2 failed: expected 202, got $($postResp.StatusCode)" }
+        $postObj = $postResp.Content | ConvertFrom-Json
+        $newCorr = $postObj.correlationId
+        Write-Host "RESULT: HTTP 202  corr=$newCorr" -ForegroundColor Green
+
+        # 3) Poll the status. Two valid outcomes for a smoke test against a
+        #    fictitious device:
+        #      a) 200 OK : the wipe runner reached InitializeAsync and the
+        #         tracker row exists. Best case (e.g. when the smoke device
+        #         actually exists in Entra).
+        #      b) 404    : the runner short-circuited BEFORE InitializeAsync
+        #         (typical for a fake device: action.denied.device-not-in-entra
+        #         fires upstream of the tracker write). Still proves the read
+        #         path through the new PE works because we got a CLEAN 404
+        #         from the table query — NOT the pre-fix 503.
+        #    Anything other than {200, 404} after the poll window is a real failure.
+        Write-Host ""
+        Write-Host "── STEP 3/3: Poll status until 200 or 60s elapsed ─────────────"
+        $deadline = (Get-Date).AddSeconds(60)
+        $r3 = $null
+        do {
+            Start-Sleep -Seconds 5
+            $r3 = Invoke-StatusCheck -Corr $newCorr -BaseHeaders $headers -ExpectedHttpHint 'polling…'
+            if ($r3.Status -eq 200) { break }
+        } while ((Get-Date) -lt $deadline)
+
+        if ($r3.Status -eq 200) {
+            $snap = $r3.Body | ConvertFrom-Json
+            Write-Host ""
+            Write-Host "SMOKE TEST PASSED ✓ — tracker row materialized." -ForegroundColor Green
+            Write-Host "  corr      = $($snap.correlationId)"
+            Write-Host "  device    = $($snap.deviceName)"
+            Write-Host "  state     = $($snap.state)"
+            Write-Host "  terminal  = $($snap.terminal)"
+            Write-Host "  issuedAt  = $($snap.issuedAt)"
+        }
+        elseif ($r3.Status -eq 404) {
+            Write-Host ""
+            Write-Host "SMOKE TEST PASSED ✓ — fictitious device denied upstream of tracker" -ForegroundColor Green
+            Write-Host "  (expected: action.denied.device-not-in-entra fires before InitializeAsync."
+            Write-Host "   The 404 — not a 503 — proves Web's read path through the new private endpoint works.)"
+        }
+        else {
+            throw "STEP 3 failed: unexpected status $($r3.Status) after 60s polling."
         }
     }
 }
