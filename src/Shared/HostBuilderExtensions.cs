@@ -206,44 +206,33 @@ public static class HostBuilderExtensions
                 ?? cfg["AzureWebJobsStorage__accountName"];
             var tableName = cfg["ActionStatus:TableName"] ?? "actionstatus";
             var probes = sp.GetServices<IActionStatusProbe>();
-            try
+            // The TableClient constructor performs NO I/O — it just binds a
+            // URI and a credential — so it is safe to build at DI time.
+            // CreateIfNotExists() (which DOES hit the network and used to be
+            // called here) is now deferred to the first write inside
+            // ActionStatusTracker.EnsureTableExistsAsync, with single-flight
+            // semantics and retry on failure. Previously a transient cold-
+            // start failure (e.g. DNS for a freshly-provisioned private
+            // endpoint not yet propagated, or RBAC still propagating)
+            // permanently disabled the tracker for the lifetime of the host
+            // and forced every GET /api/actions/status to return 503 until
+            // the Function App recycled.
+            TableClient client;
+            if (string.IsNullOrWhiteSpace(account))
             {
-                TableClient client;
-                if (string.IsNullOrWhiteSpace(account))
-                {
-                    var conn = cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true";
-                    client = new TableClient(conn, tableName);
-                }
-                else
-                {
-                    client = new TableClient(
-                        new Uri($"https://{account}.table.core.windows.net"),
-                        tableName, cred);
-                }
-                client.CreateIfNotExists();
-                return new ActionStatusTracker(client, probes,
-                    sp.GetRequiredService<AuditService>(),
-                    cfg,
-                    sp.GetRequiredService<ILogger<ActionStatusTracker>>());
+                var conn = cfg["AzureWebJobsStorage"] ?? "UseDevelopmentStorage=true";
+                client = new TableClient(conn, tableName);
             }
-            catch (Exception ex)
+            else
             {
-                // Fail-soft: if TableClient init fails (RBAC missing, network
-                // path blocked, account unreachable...) the tracker becomes
-                // disabled and GET /api/actions/status returns 503. Without
-                // this log the failure mode is invisible to operators; we
-                // surface it as a warning with the configured account name so
-                // the misconfiguration is obvious in App Insights.
-                var log = sp.GetService<ILogger<ActionStatusTracker>>();
-                log?.LogWarning(ex,
-                    "ActionStatusTracker disabled: failed to initialize TableClient for account='{Account}' table='{Table}'. " +
-                    "GET /api/actions/status will return 503 on this role until the underlying issue is fixed (likely RBAC or network).",
-                    account ?? "(none)", tableName);
-                return new ActionStatusTracker(null, probes,
-                    sp.GetRequiredService<AuditService>(),
-                    cfg,
-                    sp.GetRequiredService<ILogger<ActionStatusTracker>>());
+                client = new TableClient(
+                    new Uri($"https://{account}.table.core.windows.net"),
+                    tableName, cred);
             }
+            return new ActionStatusTracker(client, probes,
+                sp.GetRequiredService<AuditService>(),
+                cfg,
+                sp.GetRequiredService<ILogger<ActionStatusTracker>>());
         });
         return services;
     }

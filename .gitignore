@@ -22,3 +22,5 @@ artifact.zip
 # infra/main.parameters.json so the deployed Function Apps trust it, but
 # the .key/.pfx files generated locally MUST never enter source control.
 client/tests/smoke-pki/
+
+artifacts/

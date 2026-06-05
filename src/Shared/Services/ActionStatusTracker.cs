@@ -51,6 +51,11 @@ public sealed class ActionStatusTracker
 {
     public const string RowKeyStatus = "status";
 
+    // Sentinel "never" timestamp. Azure Table rejects DateTimeOffset.MinValue
+    // (0001-01-01) because the service min is 1601-01-01; using Unix epoch
+    // (1970-01-01) is safely above the floor and unambiguous as "never set".
+    private static readonly DateTimeOffset NeverTimestamp = DateTimeOffset.FromUnixTimeSeconds(0);
+
     // Terminal states. Once a row hits one of these we stop polling.
     private static readonly HashSet<string> TerminalStates = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -68,6 +73,15 @@ public sealed class ActionStatusTracker
     private readonly AuditService _audit;
     private readonly ILogger<ActionStatusTracker> _log;
     private readonly int _pollMaxAgeHours;
+    // Lazy table provisioning: instead of calling CreateIfNotExists() at DI
+    // resolution time (which permanently disables the tracker on a single
+    // transient cold-start failure — e.g. DNS for a freshly-created private
+    // endpoint hasn't propagated), we attempt it on the first WRITE call and
+    // retry on every subsequent write until it succeeds. Reads don't require
+    // it (the table service returns 404 for both "table missing" and "entity
+    // missing", which we already collapse to "no row").
+    private readonly SemaphoreSlim _ensureLock = new(1, 1);
+    private volatile bool _tableEnsured;
 
     public ActionStatusTracker(TableClient? table, IEnumerable<IActionStatusProbe> probes,
         AuditService audit, IConfiguration cfg, ILogger<ActionStatusTracker> log)
@@ -82,6 +96,40 @@ public sealed class ActionStatusTracker
 
     public bool IsEnabled => _table is not null;
     public int PollMaxAgeHours => _pollMaxAgeHours;
+
+    /// <summary>
+    /// Single-flight, retry-on-failure provisioning of the underlying table.
+    /// Returns true once we know the table exists. If the call fails (RBAC,
+    /// network, transient throttling) we log a warning and return false; the
+    /// next write attempt will try again — we never permanently disable the
+    /// tracker for a recoverable failure.
+    /// </summary>
+    private async Task<bool> EnsureTableExistsAsync(CancellationToken ct)
+    {
+        if (_table is null) return false;
+        if (_tableEnsured) return true;
+
+        await _ensureLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_tableEnsured) return true;
+            await _table.CreateIfNotExistsAsync(ct).ConfigureAwait(false);
+            _tableEnsured = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "ActionStatusTracker.EnsureTableExistsAsync failed for table '{Table}'; " +
+                "will retry on the next write. Cause is usually RBAC or network ACLs.",
+                _table.Name);
+            return false;
+        }
+        finally
+        {
+            _ensureLock.Release();
+        }
+    }
 
     /// <summary>
     /// Read the current status row for a correlationId. Returns null if no
@@ -104,9 +152,9 @@ public sealed class ActionStatusTracker
                 LastState:        row.GetString("LastState") ?? "unknown",
                 PreviousState:    row.GetString("PreviousState") ?? string.Empty,
                 Terminal:         row.GetBoolean("Terminal") ?? false,
-                IssuedAt:         row.GetDateTimeOffset("IssuedAt") ?? DateTimeOffset.MinValue,
-                LastPolledAt:     row.GetDateTimeOffset("LastPolledAt") ?? DateTimeOffset.MinValue,
-                LastChangedAt:    row.GetDateTimeOffset("LastChangedAt") ?? DateTimeOffset.MinValue,
+                IssuedAt:         row.GetDateTimeOffset("IssuedAt") ?? NeverTimestamp,
+                LastPolledAt:     row.GetDateTimeOffset("LastPolledAt") ?? NeverTimestamp,
+                LastChangedAt:    row.GetDateTimeOffset("LastChangedAt") ?? NeverTimestamp,
                 PollAttempts:     row.GetInt32("PollAttempts") ?? 0);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
@@ -124,6 +172,7 @@ public sealed class ActionStatusTracker
         string managedDeviceId, CancellationToken ct)
     {
         if (_table is null) return;
+        if (!await EnsureTableExistsAsync(ct).ConfigureAwait(false)) return;
 
         var now = DateTimeOffset.UtcNow;
         var entity = new TableEntity(SanitizeKey(msg.CorrelationId), RowKeyStatus)
@@ -134,7 +183,7 @@ public sealed class ActionStatusTracker
             { "EntraDeviceId",   msg.EntraDeviceId ?? string.Empty },
             { "IntuneDeviceId",  msg.IntuneDeviceId ?? string.Empty },
             { "IssuedAt",        now },
-            { "LastPolledAt",    DateTimeOffset.MinValue },
+            { "LastPolledAt",    NeverTimestamp },
             { "LastChangedAt",   now },
             { "LastState",       "pending" },
             { "PreviousState",   string.Empty },
@@ -151,6 +200,52 @@ public sealed class ActionStatusTracker
             // Initialization failure is logged but not fatal — the action is
             // already issued, only the tracking is degraded.
             _log.LogWarning(ex, "ActionStatusTracker: failed to initialize row for {Corr}", msg.CorrelationId);
+        }
+    }
+
+    /// <summary>
+    /// Writes a terminal status row for a request that never reached
+    /// <see cref="InitializeAsync"/> (denial paths, permanent backend failure,
+    /// idempotency collisions). Operators querying /api/actions/status get a
+    /// definitive answer (the row's <c>LastState</c> carries the reason
+    /// prefix, e.g. <c>denied:device-not-in-entra</c>) instead of an
+    /// ambiguous 404. Terminal=true keeps the poller from picking these rows
+    /// up. Best-effort: failures are logged, never thrown — the original
+    /// audit event remains the source of truth.
+    /// </summary>
+    public async Task RecordTerminalAsync(ActionRequestMessage msg, string actionType,
+        string state, CancellationToken ct, string managedDeviceId = "")
+    {
+        if (_table is null) return;
+        if (string.IsNullOrWhiteSpace(msg?.CorrelationId)) return;
+        if (!await EnsureTableExistsAsync(ct).ConfigureAwait(false)) return;
+
+        var now = DateTimeOffset.UtcNow;
+        var entity = new TableEntity(SanitizeKey(msg.CorrelationId), RowKeyStatus)
+        {
+            { "ActionType",      string.IsNullOrWhiteSpace(actionType) ? "unknown" : actionType.ToLowerInvariant() },
+            { "ManagedDeviceId", managedDeviceId ?? string.Empty },
+            { "DeviceName",      msg.DeviceName ?? string.Empty },
+            { "EntraDeviceId",   msg.EntraDeviceId ?? string.Empty },
+            { "IntuneDeviceId",  msg.IntuneDeviceId ?? string.Empty },
+            { "IssuedAt",        now },
+            { "LastPolledAt",    NeverTimestamp },
+            { "LastChangedAt",   now },
+            { "LastState",       string.IsNullOrWhiteSpace(state) ? "denied:unknown" : state },
+            { "PreviousState",   string.Empty },
+            { "PollAttempts",    0 },
+            { "Terminal",        true },
+        };
+
+        try
+        {
+            await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "ActionStatusTracker.RecordTerminalAsync failed for {Corr} state={State}",
+                msg.CorrelationId, state);
         }
     }
 

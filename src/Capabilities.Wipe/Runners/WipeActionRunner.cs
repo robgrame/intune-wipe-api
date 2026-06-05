@@ -86,6 +86,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
                 [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
             });
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:device-resolve-failed", ct);
             return;
         }
 
@@ -97,6 +98,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
                 [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
             }, LogLevel.Warning);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:device-not-in-entra", ct);
             return;
         }
 
@@ -118,6 +120,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.CorrelationId] = msg.CorrelationId,
                 [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
             });
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:group-check-failed", ct);
             return;
         }
 
@@ -129,6 +132,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
                 [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
             }, LogLevel.Warning);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:not-in-allowed-group", ct);
             return;
         }
 
@@ -161,6 +165,7 @@ public sealed class WipeActionRunner : IActionRunner
                 props["graphErrorMsg"]   = oe.Error?.Message ?? string.Empty;
             }
             _audit.TrackEvent(AuditEvents.DeniedManagedDeviceResolveFailed, ex, props);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:managed-device-resolve-failed", ct);
             return;
         }
 
@@ -173,6 +178,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.IntuneDeviceId] = msg.IntuneDeviceId,
                 [AuditEvents.Prop.EntraDeviceId]  = msg.EntraDeviceId,
             }, LogLevel.Warning);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:ownership-mismatch", ct);
             return;
         }
 
@@ -192,6 +198,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.RecentActionsInWindow]       = reserve.RecentActionsInWindow.ToString(),
                 [AuditEvents.Prop.MaxActionsPerDevicePerDay]   = reserve.MaxActionsPerDevicePerDay.ToString(),
             }, LogLevel.Warning);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:rate-limited", ct, managedId);
             return;
         }
 
@@ -234,6 +241,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.IntuneDeviceId]        = msg.IntuneDeviceId,
                 [AuditEvents.Prop.ActionSequence]        = entry.ActionSequence.ToString(),
             });
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:already-issued", ct, managedId);
             return;
         }
         if (state == ActionIdempotencyService.State.Reserved && entry.CorrelationId != msg.CorrelationId)
@@ -245,6 +253,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.DeviceName]            = msg.DeviceName,
                 [AuditEvents.Prop.IntuneDeviceId]        = msg.IntuneDeviceId,
             }, LogLevel.Warning);
+            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:in-progress-elsewhere", ct, managedId);
             return;
         }
 
@@ -279,6 +288,7 @@ public sealed class WipeActionRunner : IActionRunner
                 [AuditEvents.Prop.IntuneDeviceId]  = msg.IntuneDeviceId,
                 [AuditEvents.Prop.ManagedDeviceId] = managedId,
             });
+            await _statusTracker.RecordTerminalAsync(msg, Type, "failed:permanent", ct, managedId);
             // Do not throw — no retry on permanent errors.
         }
         catch (Exception ex)

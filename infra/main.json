@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "4145108345714753356"
+      "templateHash": "9958317150859934852"
     }
   },
   "parameters": {
@@ -193,7 +193,7 @@
         "description": "Max age (hours) of action-status rows the poller will still consider. Rows older than this with non-terminal state are flipped to action.poll-timeout. Defaults to 24 (one full day after request)."
       }
     },
-    "idempotencyMaxWipesPerDay": {
+    "idempotencyMaxActionsPerDay": {
       "type": "int",
       "defaultValue": 5,
       "metadata": {
@@ -270,11 +270,23 @@
     "appConfigDataReader": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '516239f1-63e1-4d78-a4de-a74fb236a071')]",
     "vnetName": "[toLower(format('{0}-vnet-{1}', parameters('namePrefix'), variables('suffix')))]",
     "peSubnetName": "pe-subnet",
+    "webSubnetName": "web-subnet",
+    "procFlexSubnetName": "proc-flex-subnet",
+    "wipeFlexSubnetName": "wipe-flex-subnet",
+    "nsgFlexName": "[toLower(format('{0}-nsg-flex-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "nsgWebName": "[toLower(format('{0}-nsg-web-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "natGatewayName": "[toLower(format('{0}-natgw-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "natPipName": "[toLower(format('{0}-natgw-pip-{1}', parameters('namePrefix'), variables('suffix')))]",
     "webPeSubresources": [
       "blob",
       "file",
       "queue",
       "table"
+    ],
+    "procPeSubresources": [
+      "blob",
+      "table",
+      "queue"
     ],
     "subresourceToDnsZoneId": {
       "blob": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
@@ -625,6 +637,9 @@
         "clientCertMode": "Required",
         "clientCertExclusionPaths": "/api/actions/ledger",
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webSubnetName'))]",
+        "vnetRouteAllEnabled": false,
+        "vnetContentShareEnabled": true,
         "siteConfig": {
           "minTlsVersion": "1.2",
           "ftpsState": "Disabled",
@@ -716,8 +731,8 @@
               "value": "[string(parameters('idempotencyAdminApiEnabled'))]"
             },
             {
-              "name": "Idempotency__MaxWipesPerDevicePerDay",
-              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+              "name": "Idempotency__MaxActionsPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxActionsPerDay'))]"
             },
             {
               "name": "Idempotency__RearmGracePeriodHours",
@@ -807,7 +822,8 @@
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stWebName'))]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]"
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
     {
@@ -826,6 +842,7 @@
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planProcName'))]",
         "httpsOnly": true,
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('procFlexSubnetName'))]",
         "functionAppConfig": {
           "deployment": {
             "storage": {
@@ -931,8 +948,8 @@
               "value": "[string(parameters('idempotencyAdminApiEnabled'))]"
             },
             {
-              "name": "Idempotency__MaxWipesPerDevicePerDay",
-              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+              "name": "Idempotency__MaxActionsPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxActionsPerDay'))]"
             },
             {
               "name": "Idempotency__RearmGracePeriodHours",
@@ -984,7 +1001,8 @@
         "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'table'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
     {
@@ -1003,6 +1021,7 @@
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planWipeName'))]",
         "httpsOnly": true,
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('wipeFlexSubnetName'))]",
         "functionAppConfig": {
           "deployment": {
             "storage": {
@@ -1088,8 +1107,8 @@
               "value": "false"
             },
             {
-              "name": "Idempotency__MaxWipesPerDevicePerDay",
-              "value": "[string(parameters('idempotencyMaxWipesPerDay'))]"
+              "name": "Idempotency__MaxActionsPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxActionsPerDay'))]"
             },
             {
               "name": "Idempotency__RearmGracePeriodHours",
@@ -1148,7 +1167,8 @@
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('stWipeName'))]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]"
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
     {
@@ -1675,6 +1695,120 @@
       ]
     },
     {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-01-01",
+      "name": "[variables('nsgFlexName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-Outbound-Storage",
+            "properties": {
+              "priority": 100,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "Storage",
+              "destinationPortRange": "*"
+            }
+          },
+          {
+            "name": "Allow-Outbound-AzureCloud",
+            "properties": {
+              "priority": 110,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "AzureCloud",
+              "destinationPortRange": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-01-01",
+      "name": "[variables('nsgWebName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-Outbound-Storage",
+            "properties": {
+              "priority": 100,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "Storage",
+              "destinationPortRange": "*"
+            }
+          },
+          {
+            "name": "Allow-Outbound-AzureCloud",
+            "properties": {
+              "priority": 110,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "AzureCloud",
+              "destinationPortRange": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-01-01",
+      "name": "[variables('natPipName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "idleTimeoutInMinutes": 4
+      }
+    },
+    {
+      "type": "Microsoft.Network/natGateways",
+      "apiVersion": "2024-01-01",
+      "name": "[variables('natGatewayName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "zones": [
+        "1"
+      ],
+      "properties": {
+        "idleTimeoutInMinutes": 4,
+        "publicIpAddresses": [
+          {
+            "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('natPipName'))]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('natPipName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.Network/virtualNetworks",
       "apiVersion": "2024-01-01",
       "name": "[variables('vnetName')]",
@@ -1693,9 +1827,74 @@
               "privateEndpointNetworkPolicies": "Disabled",
               "privateLinkServiceNetworkPolicies": "Enabled"
             }
+          },
+          {
+            "name": "[variables('procFlexSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.20.0.64/26",
+              "delegations": [
+                {
+                  "name": "flex-delegation",
+                  "properties": {
+                    "serviceName": "Microsoft.App/environments"
+                  }
+                }
+              ],
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgFlexName'))]"
+              },
+              "natGateway": {
+                "id": "[resourceId('Microsoft.Network/natGateways', variables('natGatewayName'))]"
+              },
+              "privateEndpointNetworkPolicies": "Enabled"
+            }
+          },
+          {
+            "name": "[variables('wipeFlexSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.20.0.128/26",
+              "delegations": [
+                {
+                  "name": "flex-delegation",
+                  "properties": {
+                    "serviceName": "Microsoft.App/environments"
+                  }
+                }
+              ],
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgFlexName'))]"
+              },
+              "natGateway": {
+                "id": "[resourceId('Microsoft.Network/natGateways', variables('natGatewayName'))]"
+              },
+              "privateEndpointNetworkPolicies": "Enabled"
+            }
+          },
+          {
+            "name": "[variables('webSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.20.0.192/26",
+              "delegations": [
+                {
+                  "name": "web-delegation",
+                  "properties": {
+                    "serviceName": "Microsoft.Web/serverFarms"
+                  }
+                }
+              ],
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgWebName'))]"
+              },
+              "privateEndpointNetworkPolicies": "Enabled"
+            }
           }
         ]
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/natGateways', variables('natGatewayName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgFlexName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgWebName'))]"
+      ]
     },
     {
       "type": "Microsoft.Network/privateDnsZones",
@@ -1816,9 +2015,13 @@
       ]
     },
     {
+      "copy": {
+        "name": "peStorageProc",
+        "count": "[length(variables('procPeSubresources'))]"
+      },
       "type": "Microsoft.Network/privateEndpoints",
       "apiVersion": "2024-01-01",
-      "name": "[format('{0}-pe-blob', variables('stProcName'))]",
+      "name": "[format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[copyIndex()])]",
       "location": "[parameters('location')]",
       "properties": {
         "subnet": {
@@ -1826,11 +2029,11 @@
         },
         "privateLinkServiceConnections": [
           {
-            "name": "blob",
+            "name": "[variables('procPeSubresources')[copyIndex()]]",
             "properties": {
               "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
               "groupIds": [
-                "blob"
+                "[variables('procPeSubresources')[copyIndex()]]"
               ]
             }
           }
@@ -1894,22 +2097,29 @@
       ]
     },
     {
+      "copy": {
+        "name": "peStorageProcDns",
+        "count": "[length(variables('procPeSubresources'))]"
+      },
       "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
       "apiVersion": "2024-01-01",
-      "name": "[format('{0}/{1}', format('{0}-pe-blob', variables('stProcName')), 'default')]",
+      "name": "[format('{0}/{1}', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[copyIndex()]), 'default')]",
       "properties": {
         "privateDnsZoneConfigs": [
           {
-            "name": "blob",
+            "name": "[variables('procPeSubresources')[copyIndex()]]",
             "properties": {
-              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]"
+              "privateDnsZoneId": "[variables('subresourceToDnsZoneId')[variables('procPeSubresources')[copyIndex()]]]"
             }
           }
         ]
       },
       "dependsOn": [
         "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
-        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stProcName')))]"
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.file.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.queue.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.table.{0}', environment().suffixes.storage))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[copyIndex()]))]"
       ]
     },
     {
@@ -2053,6 +2263,34 @@
       "type": "string",
       "value": "[variables('peSubnetName')]"
     },
+    "webSubnetName": {
+      "type": "string",
+      "value": "[variables('webSubnetName')]"
+    },
+    "procFlexSubnetName": {
+      "type": "string",
+      "value": "[variables('procFlexSubnetName')]"
+    },
+    "wipeFlexSubnetName": {
+      "type": "string",
+      "value": "[variables('wipeFlexSubnetName')]"
+    },
+    "nsgFlexName": {
+      "type": "string",
+      "value": "[variables('nsgFlexName')]"
+    },
+    "nsgWebName": {
+      "type": "string",
+      "value": "[variables('nsgWebName')]"
+    },
+    "natGatewayName": {
+      "type": "string",
+      "value": "[variables('natGatewayName')]"
+    },
+    "natGatewayPipAddress": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('natPipName')), '2024-01-01').ipAddress]"
+    },
     "privateDnsZoneBlob": {
       "type": "string",
       "value": "[format('privatelink.blob.{0}', environment().suffixes.storage)]"
@@ -2071,7 +2309,15 @@
     },
     "peStorageProcBlobId": {
       "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stProcName')))]"
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[0]))]"
+    },
+    "peStorageProcTableId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[1]))]"
+    },
+    "peStorageProcQueueId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[2]))]"
     },
     "peStorageWipeBlobId": {
       "type": "string",

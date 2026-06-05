@@ -181,19 +181,12 @@ switch ($Mode) {
         $newCorr = $postObj.correlationId
         Write-Host "RESULT: HTTP 202  corr=$newCorr" -ForegroundColor Green
 
-        # 3) Poll the status. Two valid outcomes for a smoke test against a
-        #    fictitious device:
-        #      a) 200 OK : the wipe runner reached InitializeAsync and the
-        #         tracker row exists. Best case (e.g. when the smoke device
-        #         actually exists in Entra).
-        #      b) 404    : the runner short-circuited BEFORE InitializeAsync
-        #         (typical for a fake device: action.denied.device-not-in-entra
-        #         fires upstream of the tracker write). Still proves the read
-        #         path through the new PE works because we got a CLEAN 404
-        #         from the table query — NOT the pre-fix 503.
-        #    Anything other than {200, 404} after the poll window is a real failure.
+        # 3) Poll the status. Now that the wipe runner writes a terminal row
+        #    on every denial path (commit after rubber-duck pass), STEP 3 must
+        #    reach HTTP 200. For a fictitious smoke device the row will carry
+        #    LastState='denied:device-not-in-entra' and Terminal=true.
         Write-Host ""
-        Write-Host "── STEP 3/3: Poll status until 200 or 60s elapsed ─────────────"
+        Write-Host "── STEP 3/3: Poll status until 200 (timeout 60s) ──────────────"
         $deadline = (Get-Date).AddSeconds(60)
         $r3 = $null
         do {
@@ -202,24 +195,22 @@ switch ($Mode) {
             if ($r3.Status -eq 200) { break }
         } while ((Get-Date) -lt $deadline)
 
-        if ($r3.Status -eq 200) {
-            $snap = $r3.Body | ConvertFrom-Json
-            Write-Host ""
-            Write-Host "SMOKE TEST PASSED ✓ — tracker row materialized." -ForegroundColor Green
-            Write-Host "  corr      = $($snap.correlationId)"
-            Write-Host "  device    = $($snap.deviceName)"
-            Write-Host "  state     = $($snap.state)"
-            Write-Host "  terminal  = $($snap.terminal)"
-            Write-Host "  issuedAt  = $($snap.issuedAt)"
+        if ($r3.Status -ne 200) {
+            throw "STEP 3 failed: expected 200 within 60s (last=$($r3.Status)). The wipe runner should write a terminal status row on the denial path."
         }
-        elseif ($r3.Status -eq 404) {
-            Write-Host ""
-            Write-Host "SMOKE TEST PASSED ✓ — fictitious device denied upstream of tracker" -ForegroundColor Green
-            Write-Host "  (expected: action.denied.device-not-in-entra fires before InitializeAsync."
-            Write-Host "   The 404 — not a 503 — proves Web's read path through the new private endpoint works.)"
+        $snap = $r3.Body | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "SMOKE TEST PASSED ✓ — tracker write+read path validated end-to-end." -ForegroundColor Green
+        Write-Host "  corr      = $($snap.correlationId)"
+        Write-Host "  device    = $($snap.deviceName)"
+        Write-Host "  state     = $($snap.state)"
+        Write-Host "  terminal  = $($snap.terminal)"
+        Write-Host "  issuedAt  = $($snap.issuedAt)"
+        if ($snap.terminal -ne $true) {
+            Write-Warning "Status row is non-terminal — expected denial path to mark terminal=true."
         }
-        else {
-            throw "STEP 3 failed: unexpected status $($r3.Status) after 60s polling."
+        if ($snap.state -notlike 'denied:*' -and $snap.state -notlike 'failed:*' -and $snap.state -ne 'pending') {
+            Write-Warning "Unexpected state '$($snap.state)' — expected denied:* / failed:* / pending."
         }
     }
 }
