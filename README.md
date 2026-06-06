@@ -439,7 +439,6 @@ essere override come app settings della singola Function App.
 | `ActionStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc) |
 | `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `action-ledger` admin (solo Web) |
 | `WipeRunbook__WebhookUrl` | _(vuoto)_ | Webhook del runbook Automation per la capability `wipe-runbook` (trattare come secret, Key Vault reference raccomandato) |
-| `Autopilot__AllowedGroupId` | _(default = `Wipe__AllowedGroupId`)_ | ObjectId gruppo Entra autorizzato alla self-registration Autopilot (capability `autopilot-register`) |
 | `BitLocker__AllowedGroupId` | _(default = `Wipe__AllowedGroupId`)_ | ObjectId gruppo Entra autorizzato alla rotazione recovery key (capability `bitlocker-rotate`) |
 | `Graph__TenantId` | tenant corrente | Tenant per i token Graph |
 | `Graph__ManagedIdentityClientId` | _(da bicep)_ | clientId della UAMI |

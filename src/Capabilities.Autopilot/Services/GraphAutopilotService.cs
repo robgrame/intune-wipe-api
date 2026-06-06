@@ -1,9 +1,6 @@
 using IntuneDeviceActions.Capabilities.Autopilot.Models;
-using IntuneDeviceActions.Models;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
-using Microsoft.Graph.Devices.Item.CheckMemberGroups;
 using Microsoft.Graph.Models;
 
 namespace IntuneDeviceActions.Capabilities.Autopilot.Services;
@@ -17,67 +14,29 @@ namespace IntuneDeviceActions.Capabilities.Autopilot.Services;
 public sealed record AutopilotImportResult(string? ImportIdentityId, string ImportStatus);
 
 /// <summary>
-/// Thin wrapper around <see cref="GraphServiceClient"/> exposing the
-/// Autopilot-capability-specific Microsoft Graph operations:
-/// <list type="bullet">
-///   <item>Device resolution helpers (object id / group membership) used by
-///         <c>AutopilotRegisterRunner</c> during the pre-issue safety checks —
-///         same fail-closed semantics as wipe, minus the destructive ownership
-///         verification;</item>
-///   <item>The actual Autopilot <c>importedWindowsAutopilotDeviceIdentities</c>
-///         create (the device registers itself into Windows Autopilot).</item>
-/// </list>
+/// Thin wrapper around <see cref="GraphServiceClient"/> exposing the only
+/// Autopilot-capability Microsoft Graph operation we need: the
+/// <c>importedWindowsAutopilotDeviceIdentities</c> create that registers a
+/// hardware identity into Windows Autopilot.
 /// <para>
 /// Unlike wipe/bitlocker this capability does NOT act on an existing
-/// <c>managedDevice</c> — it imports a hardware identity collected on the
-/// client, so the privileged Graph permission is
-/// <c>DeviceManagementServiceConfig.ReadWrite.All</c> (granted on the
-/// app registration, isolated on the Autopilot UAMI).
+/// <c>managedDevice</c> and does NOT pre-check Entra membership: Autopilot
+/// registration is intentionally usable on hardware that has never been
+/// hybrid-joined and therefore has no Entra device object at all (let alone
+/// a security-group membership). The privileged Graph permission is
+/// <c>DeviceManagementServiceConfig.ReadWrite.All</c>, granted on the app
+/// registration and isolated on the Autopilot UAMI.
 /// </para>
 /// </summary>
 public sealed class GraphAutopilotService
 {
     private readonly GraphServiceClient _graph;
     private readonly ILogger<GraphAutopilotService> _log;
-    private readonly string _allowedGroupId;
 
-    public GraphAutopilotService(GraphServiceClient graph, IConfiguration cfg, ILogger<GraphAutopilotService> log)
+    public GraphAutopilotService(GraphServiceClient graph, ILogger<GraphAutopilotService> log)
     {
         _graph = graph;
         _log = log;
-        _allowedGroupId = cfg["Autopilot:AllowedGroupId"]
-            ?? throw new InvalidOperationException("Autopilot:AllowedGroupId must be configured");
-    }
-
-    /// <summary>
-    /// Resolves the directory object id of an Entra device by its deviceId (azureADDeviceId).
-    /// </summary>
-    public async Task<string?> GetDeviceObjectIdAsync(string entraDeviceId, CancellationToken ct)
-    {
-        if (!Guid.TryParse(entraDeviceId, out _))
-            throw new ArgumentException("entraDeviceId must be a GUID", nameof(entraDeviceId));
-
-        var page = await _graph.Devices.GetAsync(rc =>
-        {
-            rc.QueryParameters.Filter = $"deviceId eq '{entraDeviceId}'";
-            rc.QueryParameters.Select = new[] { "id", "deviceId" };
-            rc.QueryParameters.Top    = 2;
-        }, ct);
-
-        var matches = page?.Value ?? new List<Device>();
-        if (matches.Count != 1) return null;
-        return matches[0].Id;
-    }
-
-    /// <summary>Checks membership of the configured Autopilot allow-list group.</summary>
-    public async Task<bool> IsDeviceInAllowedGroupAsync(string deviceObjectId, CancellationToken ct)
-    {
-        var body = new CheckMemberGroupsPostRequestBody { GroupIds = new List<string> { _allowedGroupId } };
-        var result = await _graph.Devices[deviceObjectId]
-            .CheckMemberGroups
-            .PostAsCheckMemberGroupsPostResponseAsync(body, cancellationToken: ct);
-        var matches = result?.Value ?? new List<string>();
-        return matches.Contains(_allowedGroupId, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>

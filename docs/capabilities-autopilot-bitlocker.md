@@ -63,9 +63,15 @@ inclusi ownership-check e rate-limit.
 1. **Allow-list:** aggiungere il tipo all'app setting/App Configuration
    `Actions:AllowedTypes` (default `wipe`, fail-closed). Esempio:
    `wipe,autopilot-register,bitlocker-rotate`.
-2. **Gruppo Entra di allow-list per device** (opzionale, default = gruppo wipe):
-   - `Autopilot__AllowedGroupId` ← param Bicep `autopilotAllowedGroupId`
+2. **Gruppo Entra di allow-list per device** (solo BitLocker — Autopilot **non**
+   ha una allow-list per gruppo Entra, vedi sotto):
    - `BitLocker__AllowedGroupId` ← param Bicep `bitlockerAllowedGroupId`
+
+   > **Autopilot non ha** `AllowedGroupId`. La registrazione Autopilot è
+   > pensata per hardware che non è ancora stato fatto hybrid-joined e quindi
+   > non esiste in Entra (e non può essere membro di nessun gruppo). Le difese
+   > sono il mTLS al bordo, l'allowlist `Actions:AllowedTypes` e il ledger di
+   > idempotency che impedisce import duplicati per lo stesso device.
 3. **Consent Graph** sulle nuove UAMI: `tools/Grant-GraphPermissions.ps1`
    assegna i ruoli sopra a `uami-autopilot` e `uami-bitlocker`.
 4. **Deploy:** `tools/Deploy-IntuneDeviceActions.ps1` pubblica e distribuisce

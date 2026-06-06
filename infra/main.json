@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "1514778744239800"
+      "templateHash": "10539495455029410876"
     }
   },
   "parameters": {
@@ -124,13 +124,6 @@
       "type": "string",
       "metadata": {
         "description": "Object Id of the Entra ID security group whose member devices are authorized to self-wipe"
-      }
-    },
-    "autopilotAllowedGroupId": {
-      "type": "string",
-      "defaultValue": "[parameters('allowedGroupId')]",
-      "metadata": {
-        "description": "Object Id of the Entra ID security group whose member devices are authorized to self-register into Windows Autopilot. Defaults to the wipe group; override to isolate the Autopilot allow-list."
       }
     },
     "bitlockerAllowedGroupId": {
@@ -2716,10 +2709,6 @@
             {
               "name": "Graph__ManagedIdentityClientId",
               "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
-            },
-            {
-              "name": "Autopilot__AllowedGroupId",
-              "value": "[parameters('autopilotAllowedGroupId')]"
             }
           ]
         }
