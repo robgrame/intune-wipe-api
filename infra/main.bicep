@@ -72,9 +72,6 @@ param maxTimestampSkewSeconds int = 300
 @description('Object Id of the Entra ID security group whose member devices are authorized to self-wipe')
 param allowedGroupId string
 
-@description('Object Id of the Entra ID security group whose member devices are authorized to self-register into Windows Autopilot. Defaults to the wipe group; override to isolate the Autopilot allow-list.')
-param autopilotAllowedGroupId string = allowedGroupId
-
 @description('Object Id of the Entra ID security group whose member devices are authorized to self-service rotate their BitLocker recovery key. Defaults to the wipe group; override to isolate the BitLocker allow-list.')
 param bitlockerAllowedGroupId string = allowedGroupId
 
@@ -1587,7 +1584,6 @@ resource funcAutopilot 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ActionStatus__PollMaxAgeHours', value: string(actionStatusPollMaxAgeHours) }
         { name: 'Graph__TenantId',                value: graphTenantId }
         { name: 'Graph__ManagedIdentityClientId', value: uamiAutopilot.properties.clientId }
-        { name: 'Autopilot__AllowedGroupId',     value: autopilotAllowedGroupId }
       ]
     }
   }

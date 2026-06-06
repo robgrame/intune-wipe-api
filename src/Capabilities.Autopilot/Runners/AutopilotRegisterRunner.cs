@@ -16,15 +16,16 @@ namespace IntuneDeviceActions.Capabilities.Autopilot.Runners;
 /// <c>importedWindowsAutopilotDeviceIdentities</c>.
 /// </summary>
 /// <remarks>
-/// Reuses the wipe/bitlocker fail-closed pre-issue safety pipeline, but:
+/// Reuses the wipe/bitlocker idempotency + status-tracking machinery, but
+/// has NO Entra pre-checks: Autopilot registration is intentionally usable
+/// on hardware that has never been hybrid-joined and therefore has no Entra
+/// device record (or group membership) to validate against. Safety relies on
+/// (a) the mTLS client-cert binding at the HTTP edge, (b) the
+/// <c>Actions:AllowedTypes</c> allowlist, and (c) the idempotency ledger
+/// preventing duplicate imports for the same device.
 /// <list type="number">
 ///   <item>requires an Autopilot payload with a hardware hash (collected on the
 ///         client — not available server-side);</item>
-///   <item>resolves the Entra directory object id;</item>
-///   <item>checks membership of the allowed Entra group (<c>Autopilot:AllowedGroupId</c>);</item>
-///   <item><b>skips</b> the destructive managedDevice ownership check — this
-///         action does not act on an existing managed device, it registers a new
-///         hardware identity;</item>
 ///   <item>reserves an idempotency ledger entry — one import per device;</item>
 ///   <item>calls Graph import; marks ledger Issued/Failed accordingly; stores
 ///         the returned import-identity id as the probe handle.</item>
@@ -90,77 +91,12 @@ public sealed class AutopilotRegisterRunner : IActionRunner
             return;
         }
 
-        // 1) Resolve Entra directory object id
-        string? deviceObjId;
-        try
-        {
-            deviceObjId = await _graph.GetDeviceObjectIdAsync(msg.EntraDeviceId, ct);
-        }
-        catch (Exception ex) when (GraphErrorClassifier.Classify(ex) == GraphErrorClassifier.GraphErrorKind.Transient)
-        {
-            _log.LogWarning(ex, "Transient error resolving device — will retry");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _audit.TrackEvent(AuditEvents.DeniedDeviceResolveFailed, ex, new Dictionary<string, string>
-            {
-                [AuditEvents.Prop.CorrelationId] = msg.CorrelationId,
-                [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
-                [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
-            });
-            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:device-resolve-failed", ct);
-            return;
-        }
-
-        if (deviceObjId is null)
-        {
-            _audit.TrackEvent(AuditEvents.DeniedDeviceNotInEntra, new Dictionary<string, string>
-            {
-                [AuditEvents.Prop.CorrelationId] = msg.CorrelationId,
-                [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
-                [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
-            }, LogLevel.Warning);
-            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:device-not-in-entra", ct);
-            return;
-        }
-
-        // 2) Group membership check
-        bool inGroup;
-        try
-        {
-            inGroup = await _graph.IsDeviceInAllowedGroupAsync(deviceObjId, ct);
-        }
-        catch (Exception ex) when (GraphErrorClassifier.Classify(ex) == GraphErrorClassifier.GraphErrorKind.Transient)
-        {
-            _log.LogWarning(ex, "Transient error on group check — will retry");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _audit.TrackEvent(AuditEvents.DeniedGroupCheckFailed, ex, new Dictionary<string, string>
-            {
-                [AuditEvents.Prop.CorrelationId] = msg.CorrelationId,
-                [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
-            });
-            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:group-check-failed", ct);
-            return;
-        }
-
-        if (!inGroup)
-        {
-            _audit.TrackEvent(AuditEvents.DeniedNotInAllowedGroup, new Dictionary<string, string>
-            {
-                [AuditEvents.Prop.CorrelationId] = msg.CorrelationId,
-                [AuditEvents.Prop.DeviceName]    = msg.DeviceName,
-                [AuditEvents.Prop.EntraDeviceId] = msg.EntraDeviceId,
-            }, LogLevel.Warning);
-            await _statusTracker.RecordTerminalAsync(msg, Type, "denied:not-in-allowed-group", ct);
-            return;
-        }
-
-        // 3) Idempotency reservation (with auto-rearm + rate limiting). Keyed on
+        // 1) Idempotency reservation (with auto-rearm + rate limiting). Keyed on
         //    the Intune device id — one Autopilot import per device.
+        //    NOTE: no Entra device resolution / no group-membership check —
+        //    autopilot registration must work on fresh hardware that has no
+        //    Entra device object at all. Safety is enforced by the mTLS edge,
+        //    the actionType allowlist, and this idempotency reservation.
         var reserve = await _ledger.ReserveAsync(msg.IntuneDeviceId, msg.CorrelationId, msg.ForceRearm, ct);
         var state = reserve.State;
         var entry = reserve.Entry;
@@ -226,7 +162,7 @@ public sealed class AutopilotRegisterRunner : IActionRunner
             return;
         }
 
-        // 4) Execute the Autopilot import
+        // 2) Execute the Autopilot import
         try
         {
             var import = await _graph.ImportAsync(autopilot, ct);
