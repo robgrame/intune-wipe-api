@@ -72,6 +72,12 @@ param maxTimestampSkewSeconds int = 300
 @description('Object Id of the Entra ID security group whose member devices are authorized to self-wipe')
 param allowedGroupId string
 
+@description('Object Id of the Entra ID security group whose member devices are authorized to self-register into Windows Autopilot. Defaults to the wipe group; override to isolate the Autopilot allow-list.')
+param autopilotAllowedGroupId string = allowedGroupId
+
+@description('Object Id of the Entra ID security group whose member devices are authorized to self-service rotate their BitLocker recovery key. Defaults to the wipe group; override to isolate the BitLocker allow-list.')
+param bitlockerAllowedGroupId string = allowedGroupId
+
 @description('Wipe options')
 param keepEnrollmentData bool = false
 param keepUserData bool = false
@@ -85,6 +91,12 @@ param actionDispatchQueueName string = 'action-dispatch'
 
 @description('Service Bus queue name for the dedicated wipe-runner Function App.')
 param wipeActionQueueName string = 'wipe-action'
+
+@description('Service Bus queue name for the dedicated autopilot-runner Function App.')
+param autopilotActionQueueName string = 'autopilot-action'
+
+@description('Service Bus queue name for the dedicated bitlocker-runner Function App.')
+param bitlockerActionQueueName string = 'bitlocker-action'
 
 // ── Storage (blob + tables) ──────────────────────────────────────────────────
 @description('Blob container name used as the idempotency ledger for action operations')
@@ -132,20 +144,30 @@ var stProcRaw  = toLower('${namePrefix}stp${suffix}')
 var stProcName = length(stProcRaw) > 24 ? substring(stProcRaw, 0, 24) : stProcRaw
 var stWipeRaw  = toLower('${namePrefix}stwp${suffix}')
 var stWipeName = length(stWipeRaw) > 24 ? substring(stWipeRaw, 0, 24) : stWipeRaw
+var stAplRaw   = toLower('${namePrefix}stap${suffix}')
+var stAplName  = length(stAplRaw) > 24 ? substring(stAplRaw, 0, 24) : stAplRaw
+var stBlkRaw   = toLower('${namePrefix}stbl${suffix}')
+var stBlkName  = length(stBlkRaw) > 24 ? substring(stBlkRaw, 0, 24) : stBlkRaw
 
 var webName  = toLower('${namePrefix}-web-${suffix}')
 var procName = toLower('${namePrefix}-proc-${suffix}')
 var wipeName = toLower('${namePrefix}-wipe-${suffix}')
+var autopilotName = toLower('${namePrefix}-autopilot-${suffix}')
+var bitlockerName = toLower('${namePrefix}-bitlocker-${suffix}')
 var aiName   = toLower('${namePrefix}-ai-${suffix}')
 var lawName  = toLower('${namePrefix}-law-${suffix}')
 
 var uamiName     = toLower('${namePrefix}-uami-${suffix}')      // dispatcher (no Graph)
 var uamiWebName  = toLower('${namePrefix}-uami-web-${suffix}')   // public web (no Graph)
 var uamiWipeName = toLower('${namePrefix}-uami-wipe-${suffix}')  // privileged Graph
+var uamiAutopilotName = toLower('${namePrefix}-uami-autopilot-${suffix}')  // privileged Graph (Autopilot import)
+var uamiBitLockerName = toLower('${namePrefix}-uami-bitlocker-${suffix}')  // privileged Graph (BitLocker rotate)
 
 var planWebName  = toLower('${namePrefix}-plan-web-${suffix}')   // EP1
 var planProcName = toLower('${namePrefix}-plan-proc-${suffix}')  // FC1
 var planWipeName = toLower('${namePrefix}-plan-wipe-${suffix}')  // FC1
+var planAutopilotName = toLower('${namePrefix}-plan-autopilot-${suffix}')  // FC1
+var planBitLockerName = toLower('${namePrefix}-plan-bitlocker-${suffix}')  // FC1
 
 var sbNamespaceName = toLower('${namePrefix}-sb-${suffix}')
 var appConfigName   = toLower('${namePrefix}-appcfg-${suffix}')
@@ -153,6 +175,8 @@ var appConfigName   = toLower('${namePrefix}-appcfg-${suffix}')
 // Per-Flex-app deployment package containers (Flex Consumption requirement).
 var procDeployContainer = 'app-package-proc'
 var wipeDeployContainer = 'app-package-wipe'
+var autopilotDeployContainer = 'app-package-autopilot'
+var bitlockerDeployContainer = 'app-package-bitlocker'
 
 // ── Observability ────────────────────────────────────────────────────────────
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -335,6 +359,32 @@ resource sbQueueActionDispatch 'Microsoft.ServiceBus/namespaces/queues@2022-10-0
 resource sbQueueWipeAction 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
   parent: sbNamespace
   name: wipeActionQueueName
+  properties: {
+    lockDuration: 'PT5M'
+    defaultMessageTimeToLive: 'P1D'
+    maxDeliveryCount: 5
+    deadLetteringOnMessageExpiration: true
+    enablePartitioning: false
+    requiresSession: false
+    requiresDuplicateDetection: false
+  }
+}
+resource sbQueueAutopilotAction 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  parent: sbNamespace
+  name: autopilotActionQueueName
+  properties: {
+    lockDuration: 'PT5M'
+    defaultMessageTimeToLive: 'P1D'
+    maxDeliveryCount: 5
+    deadLetteringOnMessageExpiration: true
+    enablePartitioning: false
+    requiresSession: false
+    requiresDuplicateDetection: false
+  }
+}
+resource sbQueueBitLockerAction 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  parent: sbNamespace
+  name: bitlockerActionQueueName
   properties: {
     lockDuration: 'PT5M'
     defaultMessageTimeToLive: 'P1D'
@@ -538,6 +588,8 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'ServiceBus__ActionRequestsQueue',     value: actionRequestsQueueName }
         { name: 'ServiceBus__ActionDispatchQueue',     value: actionDispatchQueueName }
         { name: 'ServiceBus__WipeActionQueue',         value: wipeActionQueueName }
+        { name: 'ServiceBus__AutopilotActionQueue',    value: autopilotActionQueueName }
+        { name: 'ServiceBus__BitLockerActionQueue',    value: bitlockerActionQueueName }
         { name: 'ActionStatus__TableName',             value: actionStatusTableName }
         { name: 'ActionStatus__PollMaxAgeHours',       value: string(actionStatusPollMaxAgeHours) }
         { name: 'ActionStatusPoller__CronExpression',  value: actionStatusPollerCron }
@@ -571,6 +623,8 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
     raProcSbSendDispatch
     raProcSbRecvDispatch
     raProcSbSendWipe
+    raProcSbSendAutopilot
+    raProcSbSendBitLocker
     raProcDeploy
     raAppConfigProc
   ]
@@ -1289,6 +1343,340 @@ resource peStorageWipeBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZone
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Additive privileged capabilities: Autopilot self-registration + BitLocker
+// recovery-key rotation. Each mirrors the Wipe capability (dedicated UAMI with
+// its own minimal Graph consent, dedicated FC1 Flex app, dedicated per-capability
+// Service Bus queue). The shared VNet /24 is fully allocated, so these two Flex
+// apps run WITHOUT VNet integration: their storage uses networkAcls
+// defaultAction='Allow' (publicNetworkAccess='Enabled', no private endpoint),
+// which is the operationally-proven config for Flex + MI storage access. They
+// egress to Graph via dynamic platform IPs (not the NAT GW static IP) — accepted
+// for these non-destructive admin actions.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Storage (Allow — no VNet integration) ────────────────────────────────────
+resource storageAutopilot 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stAplName
+  location: location
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Enabled'
+    supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices, Logging, Metrics'
+    }
+  }
+}
+resource blobSvcAutopilot 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storageAutopilot
+  name: 'default'
+}
+resource autopilotDeployBlobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobSvcAutopilot
+  name: autopilotDeployContainer
+  properties: { publicAccess: 'None' }
+}
+
+resource storageBitLocker 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stBlkName
+  location: location
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Enabled'
+    supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices, Logging, Metrics'
+    }
+  }
+}
+resource blobSvcBitLocker 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storageBitLocker
+  name: 'default'
+}
+resource bitlockerDeployBlobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobSvcBitLocker
+  name: bitlockerDeployContainer
+  properties: { publicAccess: 'None' }
+}
+
+// ── Dedicated privileged UAMIs (isolated Graph consent per capability) ────────
+// uamiAutopilot Graph permissions: DeviceManagementServiceConfig.ReadWrite.All,
+//   DeviceManagementManagedDevices.Read.All, Device.Read.All, GroupMember.Read.All
+// uamiBitLocker Graph permissions: DeviceManagementManagedDevices.PrivilegedOperations.All,
+//   DeviceManagementManagedDevices.Read.All, Device.Read.All, GroupMember.Read.All
+// (Granted on the app registration post-deploy, NOT in Bicep.)
+resource uamiAutopilot 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: uamiAutopilotName
+  location: location
+}
+resource uamiBitLocker 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: uamiBitLockerName
+  location: location
+}
+
+// ── FC1 Flex plans ───────────────────────────────────────────────────────────
+resource planAutopilot 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: planAutopilotName
+  location: location
+  sku: { tier: 'FlexConsumption', name: 'FC1' }
+  kind: 'functionapp'
+  properties: { reserved: true }
+}
+resource planBitLocker 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: planBitLockerName
+  location: location
+  sku: { tier: 'FlexConsumption', name: 'FC1' }
+  kind: 'functionapp'
+  properties: { reserved: true }
+}
+
+// ── Role assignments: Autopilot app ──────────────────────────────────────────
+resource raAutopilotBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAutopilot.id, uamiAutopilot.id, 'blob')
+  scope: storageAutopilot
+  properties: { roleDefinitionId: blobDataOwner, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAutopilotTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAutopilot.id, uamiAutopilot.id, 'table')
+  scope: storageAutopilot
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAutopilotLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(ledgerContainer.id, uamiAutopilot.id, 'blob-ledger')
+  scope: ledgerContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAutopilotTableOnProc 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageProc.id, uamiAutopilot.id, 'table-shared')
+  scope: storageProc
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAutopilotSbRecv 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(sbQueueAutopilotAction.id, uamiAutopilot.id, 'sb-recv')
+  scope: sbQueueAutopilotAction
+  properties: { roleDefinitionId: sbDataReceiver, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAutopilotDeploy 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(autopilotDeployBlobContainer.id, uamiAutopilot.id, 'flex-deploy')
+  scope: autopilotDeployBlobContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAppConfigAutopilot 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appConfig.id, uamiAutopilot.id, 'appcfg-reader')
+  scope: appConfig
+  properties: { roleDefinitionId: appConfigDataReader, principalId: uamiAutopilot.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// ── Role assignments: BitLocker app ──────────────────────────────────────────
+resource raBitLockerBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageBitLocker.id, uamiBitLocker.id, 'blob')
+  scope: storageBitLocker
+  properties: { roleDefinitionId: blobDataOwner, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raBitLockerTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageBitLocker.id, uamiBitLocker.id, 'table')
+  scope: storageBitLocker
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raBitLockerLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(ledgerContainer.id, uamiBitLocker.id, 'blob-ledger')
+  scope: ledgerContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raBitLockerTableOnProc 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageProc.id, uamiBitLocker.id, 'table-shared')
+  scope: storageProc
+  properties: { roleDefinitionId: tableDataContributor, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raBitLockerSbRecv 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(sbQueueBitLockerAction.id, uamiBitLocker.id, 'sb-recv')
+  scope: sbQueueBitLockerAction
+  properties: { roleDefinitionId: sbDataReceiver, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raBitLockerDeploy 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(bitlockerDeployBlobContainer.id, uamiBitLocker.id, 'flex-deploy')
+  scope: bitlockerDeployBlobContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raAppConfigBitLocker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appConfig.id, uamiBitLocker.id, 'appcfg-reader')
+  scope: appConfig
+  properties: { roleDefinitionId: appConfigDataReader, principalId: uamiBitLocker.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// ── Proc → Service Bus Sender on the new per-capability queues ────────────────
+resource raProcSbSendAutopilot 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(sbQueueAutopilotAction.id, uami.id, 'sb-send')
+  scope: sbQueueAutopilotAction
+  properties: { roleDefinitionId: sbDataSender, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource raProcSbSendBitLocker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(sbQueueBitLockerAction.id, uami.id, 'sb-send')
+  scope: sbQueueBitLockerAction
+  properties: { roleDefinitionId: sbDataSender, principalId: uami.properties.principalId, principalType: 'ServicePrincipal' }
+}
+
+// ── Autopilot Function App (privileged, no VNet) ─────────────────────────────
+resource funcAutopilot 'Microsoft.Web/sites@2023-12-01' = {
+  name: autopilotName
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${uamiAutopilot.id}': {} }
+  }
+  properties: {
+    serverFarmId: planAutopilot.id
+    httpsOnly: true
+    keyVaultReferenceIdentity: uamiAutopilot.id
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAutopilot.properties.primaryEndpoints.blob}${autopilotDeployContainer}'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uamiAutopilot.id
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'dotnet-isolated'
+        version: '10.0'
+      }
+    }
+    siteConfig: {
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      appSettings: [
+        { name: 'AzureWebJobsStorage__accountName', value: storageAutopilot.name }
+        { name: 'AzureWebJobsStorage__credential',  value: 'managedidentity' }
+        { name: 'AzureWebJobsStorage__clientId',    value: uamiAutopilot.properties.clientId }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
+        { name: 'AZURE_CLIENT_ID', value: uamiAutopilot.properties.clientId }
+        { name: 'AppConfig__Endpoint', value: appConfig.properties.endpoint }
+        { name: 'App__Role', value: 'autopilot' }
+        { name: 'ServiceBus__fullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
+        { name: 'ServiceBus__credential',              value: 'managedidentity' }
+        { name: 'ServiceBus__clientId',                value: uamiAutopilot.properties.clientId }
+        { name: 'ServiceBus__AutopilotActionQueue',    value: autopilotActionQueueName }
+        { name: 'Idempotency__BlobContainer',           value: ledgerContainerName }
+        { name: 'Idempotency__StorageAccount',          value: storageProc.name }
+        { name: 'Idempotency__AllowForceRearm',         value: string(idempotencyAllowForceRearm) }
+        { name: 'Idempotency__AdminApiEnabled',         value: 'false' }
+        { name: 'Idempotency__MaxActionsPerDevicePerDay', value: string(idempotencyMaxActionsPerDay) }
+        { name: 'Idempotency__RearmGracePeriodHours',   value: string(idempotencyRearmGracePeriodHours) }
+        { name: 'Audit__StorageAccount',   value: storageProc.name }
+        { name: 'Audit__TableName',        value: auditTableName }
+        { name: 'ActionStatus__TableName',   value: actionStatusTableName }
+        { name: 'ActionStatus__PollMaxAgeHours', value: string(actionStatusPollMaxAgeHours) }
+        { name: 'Graph__TenantId',                value: graphTenantId }
+        { name: 'Graph__ManagedIdentityClientId', value: uamiAutopilot.properties.clientId }
+        { name: 'Autopilot__AllowedGroupId',     value: autopilotAllowedGroupId }
+      ]
+    }
+  }
+  dependsOn: [
+    raAutopilotBlob
+    raAutopilotTable
+    raAutopilotLedger
+    raAutopilotTableOnProc
+    raAutopilotSbRecv
+    raAutopilotDeploy
+    raAppConfigAutopilot
+  ]
+}
+
+// ── BitLocker Function App (privileged, no VNet) ─────────────────────────────
+resource funcBitLocker 'Microsoft.Web/sites@2023-12-01' = {
+  name: bitlockerName
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${uamiBitLocker.id}': {} }
+  }
+  properties: {
+    serverFarmId: planBitLocker.id
+    httpsOnly: true
+    keyVaultReferenceIdentity: uamiBitLocker.id
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageBitLocker.properties.primaryEndpoints.blob}${bitlockerDeployContainer}'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uamiBitLocker.id
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'dotnet-isolated'
+        version: '10.0'
+      }
+    }
+    siteConfig: {
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      appSettings: [
+        { name: 'AzureWebJobsStorage__accountName', value: storageBitLocker.name }
+        { name: 'AzureWebJobsStorage__credential',  value: 'managedidentity' }
+        { name: 'AzureWebJobsStorage__clientId',    value: uamiBitLocker.properties.clientId }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: ai.properties.ConnectionString }
+        { name: 'AZURE_CLIENT_ID', value: uamiBitLocker.properties.clientId }
+        { name: 'AppConfig__Endpoint', value: appConfig.properties.endpoint }
+        { name: 'App__Role', value: 'bitlocker' }
+        { name: 'ServiceBus__fullyQualifiedNamespace', value: '${sbNamespace.name}.servicebus.windows.net' }
+        { name: 'ServiceBus__credential',              value: 'managedidentity' }
+        { name: 'ServiceBus__clientId',                value: uamiBitLocker.properties.clientId }
+        { name: 'ServiceBus__BitLockerActionQueue',    value: bitlockerActionQueueName }
+        { name: 'Idempotency__BlobContainer',           value: ledgerContainerName }
+        { name: 'Idempotency__StorageAccount',          value: storageProc.name }
+        { name: 'Idempotency__AllowForceRearm',         value: string(idempotencyAllowForceRearm) }
+        { name: 'Idempotency__AdminApiEnabled',         value: 'false' }
+        { name: 'Idempotency__MaxActionsPerDevicePerDay', value: string(idempotencyMaxActionsPerDay) }
+        { name: 'Idempotency__RearmGracePeriodHours',   value: string(idempotencyRearmGracePeriodHours) }
+        { name: 'Audit__StorageAccount',   value: storageProc.name }
+        { name: 'Audit__TableName',        value: auditTableName }
+        { name: 'ActionStatus__TableName',   value: actionStatusTableName }
+        { name: 'ActionStatus__PollMaxAgeHours', value: string(actionStatusPollMaxAgeHours) }
+        { name: 'Graph__TenantId',                value: graphTenantId }
+        { name: 'Graph__ManagedIdentityClientId', value: uamiBitLocker.properties.clientId }
+        { name: 'BitLocker__AllowedGroupId',     value: bitlockerAllowedGroupId }
+      ]
+    }
+  }
+  dependsOn: [
+    raBitLockerBlob
+    raBitLockerTable
+    raBitLockerLedger
+    raBitLockerTableOnProc
+    raBitLockerSbRecv
+    raBitLockerDeploy
+    raAppConfigBitLocker
+  ]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Outputs
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1301,6 +1689,10 @@ output procAppName    string = funcProc.name
 output procAppHostname string = funcProc.properties.defaultHostName
 output wipeAppName    string = funcWipe.name
 output wipeAppHostname string = funcWipe.properties.defaultHostName
+output autopilotAppName     string = funcAutopilot.name
+output autopilotAppHostname string = funcAutopilot.properties.defaultHostName
+output bitlockerAppName     string = funcBitLocker.name
+output bitlockerAppHostname string = funcBitLocker.properties.defaultHostName
 
 output uamiWorkerClientId    string = uami.properties.clientId
 output uamiWorkerPrincipalId string = uami.properties.principalId
@@ -1308,16 +1700,24 @@ output uamiWebClientId       string = uamiWeb.properties.clientId
 output uamiWebPrincipalId    string = uamiWeb.properties.principalId
 output uamiWipeClientId      string = uamiWipe.properties.clientId
 output uamiWipePrincipalId   string = uamiWipe.properties.principalId
+output uamiAutopilotClientId    string = uamiAutopilot.properties.clientId
+output uamiAutopilotPrincipalId string = uamiAutopilot.properties.principalId
+output uamiBitLockerClientId    string = uamiBitLocker.properties.clientId
+output uamiBitLockerPrincipalId string = uamiBitLocker.properties.principalId
 
 output storageWebAccount  string = storageWeb.name
 output storageProcAccount string = storageProc.name
 output storageWipeAccount string = storageWipe.name
+output storageAutopilotAccount string = storageAutopilot.name
+output storageBitLockerAccount string = storageBitLocker.name
 
 output serviceBusNamespace   string = sbNamespace.name
 output serviceBusFqdn        string = '${sbNamespace.name}.servicebus.windows.net'
 output actionRequestsQueueName string = actionRequestsQueueName
 output actionDispatchQueueName string = actionDispatchQueueName
 output wipeActionQueueName     string = wipeActionQueueName
+output autopilotActionQueueName string = autopilotActionQueueName
+output bitlockerActionQueueName string = bitlockerActionQueueName
 
 output ledgerContainerName string = ledgerContainerName
 output procDeployContainer string = procDeployContainer

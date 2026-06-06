@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "9958317150859934852"
+      "templateHash": "1514778744239800"
     }
   },
   "parameters": {
@@ -126,6 +126,20 @@
         "description": "Object Id of the Entra ID security group whose member devices are authorized to self-wipe"
       }
     },
+    "autopilotAllowedGroupId": {
+      "type": "string",
+      "defaultValue": "[parameters('allowedGroupId')]",
+      "metadata": {
+        "description": "Object Id of the Entra ID security group whose member devices are authorized to self-register into Windows Autopilot. Defaults to the wipe group; override to isolate the Autopilot allow-list."
+      }
+    },
+    "bitlockerAllowedGroupId": {
+      "type": "string",
+      "defaultValue": "[parameters('allowedGroupId')]",
+      "metadata": {
+        "description": "Object Id of the Entra ID security group whose member devices are authorized to self-service rotate their BitLocker recovery key. Defaults to the wipe group; override to isolate the BitLocker allow-list."
+      }
+    },
     "keepEnrollmentData": {
       "type": "bool",
       "defaultValue": false,
@@ -156,6 +170,20 @@
       "defaultValue": "wipe-action",
       "metadata": {
         "description": "Service Bus queue name for the dedicated wipe-runner Function App."
+      }
+    },
+    "autopilotActionQueueName": {
+      "type": "string",
+      "defaultValue": "autopilot-action",
+      "metadata": {
+        "description": "Service Bus queue name for the dedicated autopilot-runner Function App."
+      }
+    },
+    "bitlockerActionQueueName": {
+      "type": "string",
+      "defaultValue": "bitlocker-action",
+      "metadata": {
+        "description": "Service Bus queue name for the dedicated bitlocker-runner Function App."
       }
     },
     "ledgerContainerName": {
@@ -244,21 +272,33 @@
     "stProcName": "[if(greater(length(variables('stProcRaw')), 24), substring(variables('stProcRaw'), 0, 24), variables('stProcRaw'))]",
     "stWipeRaw": "[toLower(format('{0}stwp{1}', parameters('namePrefix'), variables('suffix')))]",
     "stWipeName": "[if(greater(length(variables('stWipeRaw')), 24), substring(variables('stWipeRaw'), 0, 24), variables('stWipeRaw'))]",
+    "stAplRaw": "[toLower(format('{0}stap{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stAplName": "[if(greater(length(variables('stAplRaw')), 24), substring(variables('stAplRaw'), 0, 24), variables('stAplRaw'))]",
+    "stBlkRaw": "[toLower(format('{0}stbl{1}', parameters('namePrefix'), variables('suffix')))]",
+    "stBlkName": "[if(greater(length(variables('stBlkRaw')), 24), substring(variables('stBlkRaw'), 0, 24), variables('stBlkRaw'))]",
     "webName": "[toLower(format('{0}-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "procName": "[toLower(format('{0}-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
     "wipeName": "[toLower(format('{0}-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "autopilotName": "[toLower(format('{0}-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "bitlockerName": "[toLower(format('{0}-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
     "aiName": "[toLower(format('{0}-ai-{1}', parameters('namePrefix'), variables('suffix')))]",
     "lawName": "[toLower(format('{0}-law-{1}', parameters('namePrefix'), variables('suffix')))]",
     "uamiName": "[toLower(format('{0}-uami-{1}', parameters('namePrefix'), variables('suffix')))]",
     "uamiWebName": "[toLower(format('{0}-uami-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "uamiWipeName": "[toLower(format('{0}-uami-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "uamiAutopilotName": "[toLower(format('{0}-uami-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "uamiBitLockerName": "[toLower(format('{0}-uami-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planWebName": "[toLower(format('{0}-plan-web-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planProcName": "[toLower(format('{0}-plan-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
     "planWipeName": "[toLower(format('{0}-plan-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "planAutopilotName": "[toLower(format('{0}-plan-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "planBitLockerName": "[toLower(format('{0}-plan-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
     "sbNamespaceName": "[toLower(format('{0}-sb-{1}', parameters('namePrefix'), variables('suffix')))]",
     "appConfigName": "[toLower(format('{0}-appcfg-{1}', parameters('namePrefix'), variables('suffix')))]",
     "procDeployContainer": "app-package-proc",
     "wipeDeployContainer": "app-package-wipe",
+    "autopilotDeployContainer": "app-package-autopilot",
+    "bitlockerDeployContainer": "app-package-bitlocker",
     "blobDataOwner": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
     "blobDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
     "queueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
@@ -562,6 +602,40 @@
       "type": "Microsoft.ServiceBus/namespaces/queues",
       "apiVersion": "2022-10-01-preview",
       "name": "[format('{0}/{1}', variables('sbNamespaceName'), parameters('wipeActionQueueName'))]",
+      "properties": {
+        "lockDuration": "PT5M",
+        "defaultMessageTimeToLive": "P1D",
+        "maxDeliveryCount": 5,
+        "deadLetteringOnMessageExpiration": true,
+        "enablePartitioning": false,
+        "requiresSession": false,
+        "requiresDuplicateDetection": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/queues",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}', variables('sbNamespaceName'), parameters('autopilotActionQueueName'))]",
+      "properties": {
+        "lockDuration": "PT5M",
+        "defaultMessageTimeToLive": "P1D",
+        "maxDeliveryCount": 5,
+        "deadLetteringOnMessageExpiration": true,
+        "enablePartitioning": false,
+        "requiresSession": false,
+        "requiresDuplicateDetection": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/queues",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}', variables('sbNamespaceName'), parameters('bitlockerActionQueueName'))]",
       "properties": {
         "lockDuration": "PT5M",
         "defaultMessageTimeToLive": "P1D",
@@ -920,6 +994,14 @@
               "value": "[parameters('wipeActionQueueName')]"
             },
             {
+              "name": "ServiceBus__AutopilotActionQueue",
+              "value": "[parameters('autopilotActionQueueName')]"
+            },
+            {
+              "name": "ServiceBus__BitLockerActionQueue",
+              "value": "[parameters('bitlockerActionQueueName')]"
+            },
+            {
               "name": "ActionStatus__TableName",
               "value": "[parameters('actionStatusTableName')]"
             },
@@ -996,6 +1078,8 @@
         "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'queue'))]",
         "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-recv'))]",
         "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionRequestsQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
         "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('actionDispatchQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
         "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('wipeActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send'))]",
         "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'table'))]",
@@ -2140,6 +2224,678 @@
         "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', environment().suffixes.storage))]",
         "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stWipeName')))]"
       ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('stAplName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "defaultAction": "Allow",
+          "bypass": "AzureServices, Logging, Metrics"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stAplName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stAplName'), 'default', variables('autopilotDeployContainer'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stAplName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('stBlkName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "defaultAction": "Allow",
+          "bypass": "AzureServices, Logging, Metrics"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('stBlkName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('stBlkName'), 'default', variables('bitlockerDeployContainer'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stBlkName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('uamiAutopilotName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('uamiBitLockerName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planAutopilotName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "tier": "FlexConsumption",
+        "name": "FC1"
+      },
+      "kind": "functionapp",
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planBitLockerName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "tier": "FlexConsumption",
+        "name": "FC1"
+      },
+      "kind": "functionapp",
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'blob')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataOwner')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'table')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'blob-ledger')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'table-shared')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'sb-recv')]",
+      "properties": {
+        "roleDefinitionId": "[variables('sbDataReceiver')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stAplName'), 'default', variables('autopilotDeployContainer'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stAplName'), 'default', variables('autopilotDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'flex-deploy')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stAplName'), 'default', variables('autopilotDeployContainer'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+      "name": "[guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'appcfg-reader')]",
+      "properties": {
+        "roleDefinitionId": "[variables('appConfigDataReader')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'blob')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataOwner')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'table')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'blob-ledger')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'table-shared')]",
+      "properties": {
+        "roleDefinitionId": "[variables('tableDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'sb-recv')]",
+      "properties": {
+        "roleDefinitionId": "[variables('sbDataReceiver')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stBlkName'), 'default', variables('bitlockerDeployContainer'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stBlkName'), 'default', variables('bitlockerDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'flex-deploy')]",
+      "properties": {
+        "roleDefinitionId": "[variables('blobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stBlkName'), 'default', variables('bitlockerDeployContainer'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+      "name": "[guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'appcfg-reader')]",
+      "properties": {
+        "roleDefinitionId": "[variables('appConfigDataReader')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send')]",
+      "properties": {
+        "roleDefinitionId": "[variables('sbDataSender')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName'))]",
+      "name": "[guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), 'sb-send')]",
+      "properties": {
+        "roleDefinitionId": "[variables('sbDataSender')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('autopilotName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planAutopilotName'))]",
+        "httpsOnly": true,
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]",
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[format('{0}{1}', reference(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), '2023-05-01').primaryEndpoints.blob, variables('autopilotDeployContainer'))]",
+              "authentication": {
+                "type": "UserAssignedIdentity",
+                "userAssignedIdentityResourceId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+              }
+            }
+          },
+          "scaleAndConcurrency": {
+            "maximumInstanceCount": 40,
+            "instanceMemoryMB": 2048
+          },
+          "runtime": {
+            "name": "dotnet-isolated",
+            "version": "10.0"
+          }
+        },
+        "siteConfig": {
+          "minTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('stAplName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "AzureWebJobsStorage__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "AZURE_CLIENT_ID",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "AppConfig__Endpoint",
+              "value": "[reference(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), '2024-05-01').endpoint]"
+            },
+            {
+              "name": "App__Role",
+              "value": "autopilot"
+            },
+            {
+              "name": "ServiceBus__fullyQualifiedNamespace",
+              "value": "[format('{0}.servicebus.windows.net', variables('sbNamespaceName'))]"
+            },
+            {
+              "name": "ServiceBus__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "ServiceBus__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "ServiceBus__AutopilotActionQueue",
+              "value": "[parameters('autopilotActionQueueName')]"
+            },
+            {
+              "name": "Idempotency__BlobContainer",
+              "value": "[parameters('ledgerContainerName')]"
+            },
+            {
+              "name": "Idempotency__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__AllowForceRearm",
+              "value": "[string(parameters('idempotencyAllowForceRearm'))]"
+            },
+            {
+              "name": "Idempotency__AdminApiEnabled",
+              "value": "false"
+            },
+            {
+              "name": "Idempotency__MaxActionsPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxActionsPerDay'))]"
+            },
+            {
+              "name": "Idempotency__RearmGracePeriodHours",
+              "value": "[string(parameters('idempotencyRearmGracePeriodHours'))]"
+            },
+            {
+              "name": "Audit__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Audit__TableName",
+              "value": "[parameters('auditTableName')]"
+            },
+            {
+              "name": "ActionStatus__TableName",
+              "value": "[parameters('actionStatusTableName')]"
+            },
+            {
+              "name": "ActionStatus__PollMaxAgeHours",
+              "value": "[string(parameters('actionStatusPollMaxAgeHours'))]"
+            },
+            {
+              "name": "Graph__TenantId",
+              "value": "[parameters('graphTenantId')]"
+            },
+            {
+              "name": "Graph__ManagedIdentityClientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "Autopilot__AllowedGroupId",
+              "value": "[parameters('autopilotAllowedGroupId')]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planAutopilotName'))]",
+        "[extensionResourceId(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'appcfg-reader'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'blob'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stAplName'), 'default', variables('autopilotDeployContainer')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stAplName'), 'default', variables('autopilotDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'flex-deploy'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'blob-ledger'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('autopilotActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stAplName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'table'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), 'table-shared'))]",
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stAplName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('bitlockerName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planBitLockerName'))]",
+        "httpsOnly": true,
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]",
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[format('{0}{1}', reference(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), '2023-05-01').primaryEndpoints.blob, variables('bitlockerDeployContainer'))]",
+              "authentication": {
+                "type": "UserAssignedIdentity",
+                "userAssignedIdentityResourceId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+              }
+            }
+          },
+          "scaleAndConcurrency": {
+            "maximumInstanceCount": 40,
+            "instanceMemoryMB": 2048
+          },
+          "runtime": {
+            "name": "dotnet-isolated",
+            "version": "10.0"
+          }
+        },
+        "siteConfig": {
+          "minTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('stBlkName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "AzureWebJobsStorage__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "AZURE_CLIENT_ID",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "AppConfig__Endpoint",
+              "value": "[reference(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), '2024-05-01').endpoint]"
+            },
+            {
+              "name": "App__Role",
+              "value": "bitlocker"
+            },
+            {
+              "name": "ServiceBus__fullyQualifiedNamespace",
+              "value": "[format('{0}.servicebus.windows.net', variables('sbNamespaceName'))]"
+            },
+            {
+              "name": "ServiceBus__credential",
+              "value": "managedidentity"
+            },
+            {
+              "name": "ServiceBus__clientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "ServiceBus__BitLockerActionQueue",
+              "value": "[parameters('bitlockerActionQueueName')]"
+            },
+            {
+              "name": "Idempotency__BlobContainer",
+              "value": "[parameters('ledgerContainerName')]"
+            },
+            {
+              "name": "Idempotency__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Idempotency__AllowForceRearm",
+              "value": "[string(parameters('idempotencyAllowForceRearm'))]"
+            },
+            {
+              "name": "Idempotency__AdminApiEnabled",
+              "value": "false"
+            },
+            {
+              "name": "Idempotency__MaxActionsPerDevicePerDay",
+              "value": "[string(parameters('idempotencyMaxActionsPerDay'))]"
+            },
+            {
+              "name": "Idempotency__RearmGracePeriodHours",
+              "value": "[string(parameters('idempotencyRearmGracePeriodHours'))]"
+            },
+            {
+              "name": "Audit__StorageAccount",
+              "value": "[variables('stProcName')]"
+            },
+            {
+              "name": "Audit__TableName",
+              "value": "[parameters('auditTableName')]"
+            },
+            {
+              "name": "ActionStatus__TableName",
+              "value": "[parameters('actionStatusTableName')]"
+            },
+            {
+              "name": "ActionStatus__PollMaxAgeHours",
+              "value": "[string(parameters('actionStatusPollMaxAgeHours'))]"
+            },
+            {
+              "name": "Graph__TenantId",
+              "value": "[parameters('graphTenantId')]"
+            },
+            {
+              "name": "Graph__ManagedIdentityClientId",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').clientId]"
+            },
+            {
+              "name": "BitLocker__AllowedGroupId",
+              "value": "[parameters('bitlockerAllowedGroupId')]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planBitLockerName'))]",
+        "[extensionResourceId(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.AppConfiguration/configurationStores', variables('appConfigName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'appcfg-reader'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'blob'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stBlkName'), 'default', variables('bitlockerDeployContainer')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stBlkName'), 'default', variables('bitlockerDeployContainer')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'flex-deploy'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'blob-ledger'))]",
+        "[extensionResourceId(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ServiceBus/namespaces/queues', variables('sbNamespaceName'), parameters('bitlockerActionQueueName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'sb-recv'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'table'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('stProcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), 'table-shared'))]",
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespaceName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stBlkName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName'))]"
+      ]
     }
   ],
   "outputs": {
@@ -2175,6 +2931,22 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Web/sites', variables('wipeName')), '2023-12-01').defaultHostName]"
     },
+    "autopilotAppName": {
+      "type": "string",
+      "value": "[variables('autopilotName')]"
+    },
+    "autopilotAppHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('autopilotName')), '2023-12-01').defaultHostName]"
+    },
+    "bitlockerAppName": {
+      "type": "string",
+      "value": "[variables('bitlockerName')]"
+    },
+    "bitlockerAppHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('bitlockerName')), '2023-12-01').defaultHostName]"
+    },
     "uamiWorkerClientId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiName')), '2023-01-31').clientId]"
@@ -2199,6 +2971,22 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWipeName')), '2023-01-31').principalId]"
     },
+    "uamiAutopilotClientId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').clientId]"
+    },
+    "uamiAutopilotPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiAutopilotName')), '2023-01-31').principalId]"
+    },
+    "uamiBitLockerClientId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').clientId]"
+    },
+    "uamiBitLockerPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiBitLockerName')), '2023-01-31').principalId]"
+    },
     "storageWebAccount": {
       "type": "string",
       "value": "[variables('stWebName')]"
@@ -2210,6 +2998,14 @@
     "storageWipeAccount": {
       "type": "string",
       "value": "[variables('stWipeName')]"
+    },
+    "storageAutopilotAccount": {
+      "type": "string",
+      "value": "[variables('stAplName')]"
+    },
+    "storageBitLockerAccount": {
+      "type": "string",
+      "value": "[variables('stBlkName')]"
     },
     "serviceBusNamespace": {
       "type": "string",
@@ -2230,6 +3026,14 @@
     "wipeActionQueueName": {
       "type": "string",
       "value": "[parameters('wipeActionQueueName')]"
+    },
+    "autopilotActionQueueName": {
+      "type": "string",
+      "value": "[parameters('autopilotActionQueueName')]"
+    },
+    "bitlockerActionQueueName": {
+      "type": "string",
+      "value": "[parameters('bitlockerActionQueueName')]"
     },
     "ledgerContainerName": {
       "type": "string",

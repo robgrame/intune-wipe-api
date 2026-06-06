@@ -9,6 +9,12 @@
       - uamiWipe  (privileged): DeviceManagementManagedDevices.PrivilegedOperations.All,
                                 DeviceManagementManagedDevices.Read.All,
                                 Device.Read.All, GroupMember.Read.All
+      - uamiAutopilot (privileged): DeviceManagementServiceConfig.ReadWrite.All,
+                                DeviceManagementManagedDevices.Read.All,
+                                Device.Read.All, GroupMember.Read.All
+      - uamiBitLocker (privileged): DeviceManagementManagedDevices.PrivilegedOperations.All,
+                                DeviceManagementManagedDevices.Read.All,
+                                Device.Read.All, GroupMember.Read.All
       - uami      (status poller): DeviceManagementManagedDevices.Read.All
 
     Idempotent: existing assignments are detected via 409/duplicate and skipped.
@@ -49,6 +55,18 @@ $assignments = @{
         'Device.Read.All',
         'GroupMember.Read.All'
     )
+    'uamiAutopilot' = @(
+        'DeviceManagementServiceConfig.ReadWrite.All',
+        'DeviceManagementManagedDevices.Read.All',
+        'Device.Read.All',
+        'GroupMember.Read.All'
+    )
+    'uamiBitLocker' = @(
+        'DeviceManagementManagedDevices.PrivilegedOperations.All',
+        'DeviceManagementManagedDevices.Read.All',
+        'Device.Read.All',
+        'GroupMember.Read.All'
+    )
     'uami'     = @(
         'DeviceManagementManagedDevices.Read.All'
     )
@@ -56,8 +74,10 @@ $assignments = @{
 
 # Map logical name -> actual UAMI Azure resource name (matches main.bicep)
 $uamiResourceNames = @{
-    'uamiWipe' = "$NamePrefix-uami-wipe-*"
-    'uami'     = "$NamePrefix-uami-*"   # will be filtered to exclude -wipe- and -web-
+    'uamiWipe'      = "$NamePrefix-uami-wipe-*"
+    'uamiAutopilot' = "$NamePrefix-uami-autopilot-*"
+    'uamiBitLocker' = "$NamePrefix-uami-bitlocker-*"
+    'uami'          = "$NamePrefix-uami-*"   # filtered to exclude -wipe-/-web-/-autopilot-/-bitlocker-
 }
 
 Write-Step "Resolving Microsoft Graph service principal"
@@ -79,13 +99,21 @@ if (-not $allUamis) { throw "No UAMIs found in $ResourceGroup" }
 
 $uamiByLogical = @{}
 $uamiWipe = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-wipe-*" } | Select-Object -First 1
-$uamiPoll = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-*" -and $_.name -notlike "$NamePrefix-uami-wipe-*" -and $_.name -notlike "$NamePrefix-uami-web-*" } | Select-Object -First 1
+$uamiAutopilot = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-autopilot-*" } | Select-Object -First 1
+$uamiBitLocker = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-bitlocker-*" } | Select-Object -First 1
+$uamiPoll = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-*" -and $_.name -notlike "$NamePrefix-uami-wipe-*" -and $_.name -notlike "$NamePrefix-uami-web-*" -and $_.name -notlike "$NamePrefix-uami-autopilot-*" -and $_.name -notlike "$NamePrefix-uami-bitlocker-*" } | Select-Object -First 1
 if (-not $uamiWipe) { throw "uamiWipe not found (pattern $NamePrefix-uami-wipe-*)" }
-if (-not $uamiPoll) { throw "uami (status poller) not found (pattern $NamePrefix-uami-* excluding -wipe-/-web-)" }
+if (-not $uamiAutopilot) { throw "uamiAutopilot not found (pattern $NamePrefix-uami-autopilot-*)" }
+if (-not $uamiBitLocker) { throw "uamiBitLocker not found (pattern $NamePrefix-uami-bitlocker-*)" }
+if (-not $uamiPoll) { throw "uami (status poller) not found (pattern $NamePrefix-uami-* excluding -wipe-/-web-/-autopilot-/-bitlocker-)" }
 $uamiByLogical['uamiWipe'] = $uamiWipe
+$uamiByLogical['uamiAutopilot'] = $uamiAutopilot
+$uamiByLogical['uamiBitLocker'] = $uamiBitLocker
 $uamiByLogical['uami']     = $uamiPoll
-Write-Ok "uamiWipe -> $($uamiWipe.name)  (principalId $($uamiWipe.principalId))"
-Write-Ok "uami     -> $($uamiPoll.name)  (principalId $($uamiPoll.principalId))"
+Write-Ok "uamiWipe      -> $($uamiWipe.name)  (principalId $($uamiWipe.principalId))"
+Write-Ok "uamiAutopilot -> $($uamiAutopilot.name)  (principalId $($uamiAutopilot.principalId))"
+Write-Ok "uamiBitLocker -> $($uamiBitLocker.name)  (principalId $($uamiBitLocker.principalId))"
+Write-Ok "uami          -> $($uamiPoll.name)  (principalId $($uamiPoll.principalId))"
 
 $totalGranted = 0
 $totalSkipped = 0

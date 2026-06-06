@@ -1,4 +1,6 @@
 using IntuneDeviceActions;
+using IntuneDeviceActions.Capabilities.Autopilot;
+using IntuneDeviceActions.Capabilities.BitLocker;
 using IntuneDeviceActions.Capabilities.Wipe;
 using IntuneDeviceActions.Middleware;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,6 +29,18 @@ var host = new HostBuilder()
         //   AddWipeProbe:      WipeActionStatusProbe so the poller can probe "wipe" rows.
         services.AddWipeForwarding();
         services.AddWipeProbe();
+
+        // BitLocker capability — proc role only forwards (does NOT execute).
+        //   AddBitLockerForwarding: BitLockerActionSender + BitLockerForwardingRunner (bitlocker-action queue)
+        //   AddBitLockerProbe:      BitLockerActionStatusProbe so the poller can probe "bitlocker-rotate" rows.
+        services.AddBitLockerForwarding();
+        services.AddBitLockerProbe();
+
+        // Autopilot capability — proc role only forwards (does NOT execute).
+        //   AddAutopilotForwarding: AutopilotActionSender + AutopilotForwardingRunner (autopilot-action queue)
+        //   AddAutopilotProbe:      AutopilotActionStatusProbe so the poller can probe "autopilot-register" rows.
+        services.AddAutopilotForwarding();
+        services.AddAutopilotProbe();
     })
     .Build();
 

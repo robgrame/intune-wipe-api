@@ -1,0 +1,26 @@
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "excludedTypes": "Request;Event;Exception"
+      }
+    },
+    "logLevel": {
+      "default": "Information",
+      "Host.Aggregator": "Information",
+      "Host.Results": "Information",
+      "Function": "Information",
+      "IntuneDeviceActions": "Information"
+    }
+  },
+  "extensions": {
+    "serviceBus": {
+      "maxConcurrentCalls": 4,
+      "prefetchCount": 0,
+      "autoCompleteMessages": true,
+      "maxAutoLockRenewalDuration": "00:10:00"
+    }
+  }
+}

@@ -1,14 +1,14 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    End-to-end deploy of IntuneDeviceActions (Web + Proc + Wipe Function Apps).
+    End-to-end deploy of IntuneDeviceActions (Web + Proc + Wipe + Autopilot + BitLocker Function Apps).
 
 .DESCRIPTION
     Idempotent helper that:
       1. Verifies / auto-installs prerequisites: .NET 10 SDK, Azure CLI, Bicep.
       2. Logs in to Azure (interactive) and selects subscription.
       3. Prompts only for parameters not supplied on the command line.
-      4. Builds + publishes Web/Proc/Wipe and creates 3 deployment zips.
+      4. Builds + publishes Web/Proc/Wipe/Autopilot/BitLocker and creates 5 deployment zips.
       5. Deploys infra via Bicep (creates the RG if missing).
       6. Restarts the 3 Function Apps (RBAC propagation) and deploys the zips.
       7. Runs a smoke test and prints remaining manual steps
@@ -217,13 +217,15 @@ function Resolve-Inputs {
 # -- Build + publish --------------------------------------------------------
 function Invoke-Publish {
     if ($SkipPublish) { Write-Warn2 'Skipping publish (-SkipPublish).'; return }
-    Write-Step 'Publishing 3 projects (Release) + zipping'
+    Write-Step 'Publishing 5 projects (Release) + zipping'
     if (Test-Path $PublishDir) { Remove-Item $PublishDir -Recurse -Force }
     New-Item -ItemType Directory -Path $PublishDir | Out-Null
     $projects = @(
         @{ Name='web';  Csproj='src\Web\IntuneDeviceActions.Web.csproj'   }
         @{ Name='proc'; Csproj='src\Proc\IntuneDeviceActions.Proc.csproj' }
         @{ Name='wipe'; Csproj='src\Wipe\IntuneDeviceActions.Wipe.csproj' }
+        @{ Name='autopilot'; Csproj='src\Autopilot\IntuneDeviceActions.Autopilot.csproj' }
+        @{ Name='bitlocker'; Csproj='src\BitLocker\IntuneDeviceActions.BitLocker.csproj' }
     )
     foreach ($p in $projects) {
         $csproj = Join-Path $RepoRoot $p.Csproj
@@ -293,13 +295,13 @@ function Get-FunctionAppByRole($role) {
 function Invoke-ZipDeploy {
     if ($SkipDeploy) { Write-Warn2 'Skipping zip deploy (-SkipDeploy).'; return }
     $apps = @{}
-    foreach ($role in 'web','proc','wipe') {
+    foreach ($role in 'web','proc','wipe','autopilot','bitlocker') {
         $a = Get-FunctionAppByRole $role
         if (-not $a) { throw "No Function App found with prefix '$NamePrefix-$role-' in $ResourceGroup." }
         $apps[$role] = $a
     }
     Write-Step 'Restarting Function Apps (RBAC propagation buffer)'
-    foreach ($role in 'web','proc','wipe') {
+    foreach ($role in 'web','proc','wipe','autopilot','bitlocker') {
         & az functionapp restart -g $ResourceGroup -n $apps[$role] --only-show-errors -o none
         Write-Ok "restarted $($apps[$role])"
     }
@@ -307,7 +309,7 @@ function Invoke-ZipDeploy {
     Start-Sleep 60
 
     Write-Step 'Deploying function zips'
-    foreach ($role in 'web','proc','wipe') {
+    foreach ($role in 'web','proc','wipe','autopilot','bitlocker') {
         $app = $apps[$role]
         $zip = Join-Path $PublishDir "$role.zip"
         if (-not (Test-Path $zip)) { throw "Missing zip: $zip (did you skip -SkipPublish?)" }
@@ -338,7 +340,7 @@ function Invoke-SmokeTest {
         if ($code -in 401, 403) { Write-Ok "mTLS enforced (HTTP $code without client cert)" }
         else { Write-Warn2 "Unexpected response: HTTP $code - verify manually." }
     }
-    foreach ($role in 'proc','wipe') {
+    foreach ($role in 'proc','wipe','autopilot','bitlocker') {
         $app = Get-FunctionAppByRole $role
         try {
             $r = Invoke-WebRequest "https://$app.azurewebsites.net/" `
