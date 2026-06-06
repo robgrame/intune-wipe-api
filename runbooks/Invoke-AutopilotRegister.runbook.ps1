@@ -1,152 +1,165 @@
 #requires -Version 7.2
-#requires -Modules @{ ModuleName='Az.Accounts'; ModuleVersion='2.13.0' }
-#requires -Modules @{ ModuleName='Az.Storage';  ModuleVersion='6.0.0' }
-#requires -Modules @{ ModuleName='AzTable';     ModuleVersion='2.1.0' }
-
 <#
 .SYNOPSIS
-    PowerShell 7.2 runbook variant of the autopilot-register capability.
+    Azure Automation Runbook (PowerShell 7.2) — autopilot-register capability
+    executor with functional parity to
+    IntuneDeviceActions.Capabilities.Autopilot.AutopilotRegisterRunner.
 
 .DESCRIPTION
-    Same envelope, audit table, and Graph endpoint as
-    src/Capabilities.Autopilot/Runners/AutopilotRegisterRunner.cs. The
-    idempotency ledger is intentionally NOT replicated — see the Function
-    App pipeline for production semantics.
+    Pipeline (mirrors AutopilotRegisterRunner.RunAsync):
+        0. Payload validation — hardwareIdentifier mandatory (from extras)
+        1. Idempotency reservation (auto-rearm + 24h rolling rate limit)
+        2. Issue Graph importedWindowsAutopilotDeviceIdentities → mark ledger,
+           audit, init status tracker with importIdentity id as the probe handle
 
-.PARAMETER EnvelopeJson
-    ActionRequestMessage JSON. Required extras: serialNumber,
-    hardwareIdentifier (base64), groupTag (optional but recommended),
-    productKey/oemManufacturer/model when available.
+    NO Entra resolve / NO group check / NO ownership step — Autopilot
+    registration is intentionally usable on hardware that has never been
+    Entra-joined (mirrors the .NET runner's documented behaviour). Safety
+    relies on the mTLS edge + Actions:AllowedTypes allowlist + idempotency.
+
+    All helpers live in _lib/RunbookCore.ps1 which is concatenated in front
+    of this file by tools/Deploy-IntuneDeviceActions.ps1 at publish time.
 #>
 [CmdletBinding()]
-param([Parameter(Mandatory)] [string] $EnvelopeJson)
+param(
+    [Parameter(Mandatory = $false)] [object]$WebhookData,
+    [Parameter(Mandatory = $false)] [string]$EnvelopeJson
+)
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-function Get-GraphToken {
-    $t = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -AsSecureString:$false -ErrorAction Stop
-    return $t.Token
-}
-function Invoke-GraphApi {
-    param([string]$Token, [string]$Method, [string]$Uri, [object]$Body)
-    $h = @{ Authorization = "Bearer $Token"; 'Content-Type' = 'application/json' }
-    $p = @{ Method=$Method; Uri=$Uri; Headers=$h; ErrorAction='Stop' }
-    if ($null -ne $Body) { $p['Body'] = ($Body | ConvertTo-Json -Depth 16 -Compress) }
-    try { return Invoke-RestMethod @p }
-    catch {
-        $st = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
-        $msg = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-        throw "Graph $Method $Uri failed (HTTP $st): $msg"
-    }
-}
-function Get-AuditTable {
-    param([string]$StorageAccountName, [string]$TableName)
-    $ctx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction Stop
-    $t = Get-AzStorageTable -Name $TableName -Context $ctx -ErrorAction SilentlyContinue
-    if (-not $t) { $t = New-AzStorageTable -Name $TableName -Context $ctx -ErrorAction Stop }
-    return $t.CloudTable
-}
-function Write-AuditRow {
-    param($Table, [string]$Pk, [string]$Corr, [string]$EventType, [hashtable]$Props)
-    $now = [DateTimeOffset]::UtcNow
-    $desc = ([DateTime]::MaxValue.Ticks - $now.UtcTicks).ToString('D19')
-    $rk = "$desc-$([Guid]::NewGuid().ToString('N'))"
-    $p = @{}
-    foreach ($k in $Props.Keys) { $p[$k] = [string]$Props[$k] }
-    $p['eventType']     = $EventType
-    $p['source']        = 'runbook:autopilot-register'
-    $p['correlationId'] = $Corr
-    $p['issuedAtUtc']   = $now.ToString('o')
-    Add-AzTableRow -Table $Table -PartitionKey $Pk -RowKey $rk -Property $p | Out-Null
-}
-function Get-VarOrDefault {
-    param([string]$Name, $Default)
-    try { return Get-AutomationVariable -Name $Name -ErrorAction Stop } catch { return $Default }
-}
-function Get-Extra {
-    param($Env, [string]$Name)
-    if ($Env.PSObject.Properties.Name -contains 'extras' -and $Env.extras) {
-        $v = $Env.extras.PSObject.Properties[$Name]
-        if ($v) { return [string]$v.Value }
-    }
-    if ($Env.PSObject.Properties.Name -contains $Name) {
-        return [string]$Env.$Name
-    }
-    return $null
+# >>> RBC-LIB-INSERTION-POINT <<<
+
+$rawJson = if ($EnvelopeJson) { $EnvelopeJson }
+           elseif ($WebhookData) { [string]$WebhookData.RequestBody }
+           else { throw 'Runbook requires either -WebhookData or -EnvelopeJson.' }
+
+$env = ConvertFrom-RbcEnvelope -Json $rawJson
+foreach ($req in @('correlationId','intuneDeviceId')) {
+    $value = $env[(($req.Substring(0,1).ToUpperInvariant()) + $req.Substring(1))]
+    if ([string]::IsNullOrWhiteSpace([string]$value)) { throw "Envelope missing required field '$req'." }
 }
 
-$env = $EnvelopeJson | ConvertFrom-Json -Depth 16
-foreach ($p in @('correlationId','intuneDeviceId')) {
-    if (-not ($env.PSObject.Properties.Name -contains $p)) { throw "Envelope missing '$p'" }
-}
-$corr        = [string]$env.correlationId
-$intune      = [string]$env.intuneDeviceId
-$serial      = Get-Extra $env 'serialNumber'
-$hwHashB64   = Get-Extra $env 'hardwareIdentifier'
-$groupTag    = Get-Extra $env 'groupTag'
-$oem         = Get-Extra $env 'oemManufacturer'
-$model       = Get-Extra $env 'model'
-$productKey  = Get-Extra $env 'productKey'
+$ctx = New-RbcContext `
+    -ActionType     'autopilot-register' `
+    -CorrelationId  $env.CorrelationId `
+    -IntuneDeviceId $env.IntuneDeviceId `
+    -EntraDeviceId  $env.EntraDeviceId `
+    -DeviceName     $env.DeviceName `
+    -ForceRearm     $env.ForceRearm
 
-if (-not $serial -or -not $hwHashB64) {
-    throw "Envelope missing 'serialNumber' and/or 'hardwareIdentifier' (in extras or root)."
+Write-RbcInfo "autopilot-register runbook starting" @{
+    corr = $ctx.CorrelationId; intune = $ctx.IntuneDeviceId; device = $ctx.DeviceName
 }
-
-Write-Output "==> autopilot-register runbook starting (corr=$corr serial=$serial groupTag=$groupTag)"
 
 Disable-AzContextAutosave -Scope Process | Out-Null
 $null = Connect-AzAccount -Identity -ErrorAction Stop
 
-$auditStorage    = Get-VarOrDefault 'AuditStorageAccount' $null
-$auditTableName  = Get-VarOrDefault 'AuditTableName' 'AuditEvents'
-if (-not $auditStorage) { throw 'AuditStorageAccount Automation Variable not set' }
-$audit = Get-AuditTable -StorageAccountName $auditStorage -TableName $auditTableName
+# ─── 0) Payload validation: hardwareIdentifier required ────────────────────
+$serial     = Get-RbcExtra -Extras $env.Extras -Name 'serialNumber'
+$hwHashB64  = Get-RbcExtra -Extras $env.Extras -Name 'hardwareIdentifier'
+$groupTag   = Get-RbcExtra -Extras $env.Extras -Name 'groupTag'
+$productKey = Get-RbcExtra -Extras $env.Extras -Name 'productKey'
 
-$token = Get-GraphToken
-
-$body = @{
-    '@odata.type'        = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
-    serialNumber         = $serial
-    hardwareIdentifier   = $hwHashB64
+if (-not $hwHashB64) {
+    Write-RbcAudit -EventName $script:RbcAudit.ApDeniedMissingHardwareHash -Context $ctx -Level 'Warning' -Props @{
+        serialNumber = ($serial ?? '')
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:missing-hardware-hash'
+    return
 }
-if ($groupTag)   { $body['groupTag']        = $groupTag }
-if ($productKey) { $body['productKey']      = $productKey }
-if ($oem -and $model) {
-    $body['state'] = @{
-        '@odata.type'             = 'microsoft.graph.importedWindowsAutopilotDeviceIdentityState'
-        deviceImportStatus        = 'pending'
-        deviceErrorCode           = 0
-        deviceErrorName           = ''
+
+# ─── 1) Idempotency reservation ────────────────────────────────────────────
+$reserve = Reserve-RbcLedger -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId `
+                              -CorrelationId $ctx.CorrelationId -ForceRearm $ctx.ForceRearm
+$state = [string]$reserve.State
+$entry = $reserve.Entry
+
+if ($state -eq 'RateLimited') {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedRateLimited -Context $ctx -Level 'Warning' -Props @{
+        recentActionsInWindow     = $reserve.RecentActionsInWindow
+        maxActionsPerDevicePerDay = $reserve.MaxActionsPerDevicePerDay
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:rate-limited'
+    return
+}
+
+if ([string]$reserve.Rearmed -ne 'None') {
+    $rearmEvent = switch ([string]$reserve.Rearmed) {
+        'AfterSuccess'     { $script:RbcAudit.LedgerRearmedAfterSuccess }
+        'AfterFailure'     { $script:RbcAudit.LedgerRearmedAfterFailure }
+        'AfterPollTimeout' { $script:RbcAudit.LedgerRearmedAfterTimeout }
+        'Forced'           { $script:RbcAudit.LedgerRearmedForced }
+        default            { $script:RbcAudit.LedgerRearmedAfterSuccess }
+    }
+    Write-RbcAudit -EventName $rearmEvent -Context $ctx -Props @{
+        actionSequence        = [int]$entry.ActionSequence
+        previousTerminalState = ([string]$entry.LastTerminalState ?? '(unknown)')
+        rearmReason           = [string]$reserve.Rearmed
     }
 }
 
+if ($state -eq 'Issued') {
+    Write-RbcAudit -EventName $script:RbcAudit.ActionAlreadyIssued -Context $ctx -Props @{
+        originalCorrelationId = [string]$entry.CorrelationId
+        actionSequence        = [int]$entry.ActionSequence
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:already-issued'
+    return
+}
+if ($state -eq 'Reserved' -and [string]$entry.CorrelationId -ne $ctx.CorrelationId) {
+    Write-RbcAudit -EventName $script:RbcAudit.ActionInProgressElsewhere -Context $ctx -Level 'Warning' -Props @{
+        originalCorrelationId = [string]$entry.CorrelationId
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:in-progress-elsewhere'
+    return
+}
+
+# ─── 2) Execute Autopilot import ───────────────────────────────────────────
 $importUri = 'https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities'
+$importBody = @{
+    '@odata.type'      = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
+    serialNumber       = ($serial ?? '')
+    hardwareIdentifier = $hwHashB64
+}
+if ($groupTag)   { $importBody['groupTag']   = $groupTag }
+if ($productKey) { $importBody['productKey'] = $productKey }
 
 try {
-    $resp = Invoke-GraphApi -Token $token -Method POST -Uri $importUri -Body $body
-    $importedId = [string]$resp.id
-    Write-AuditRow -Table $audit -Pk $intune -Corr $corr -EventType 'action.dispatch.completed' -Props @{
-        actionType          = 'autopilot-register'
-        importedId          = $importedId
-        serialNumber        = $serial
-        groupTag            = ($groupTag ?? '')
+    $resp = Invoke-RbcGraphApi -Method POST -Uri $importUri -Body $importBody
+    $importIdentityId = [string]$resp.id
+    [void](Set-RbcLedgerOutcome -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId -CorrelationId $ctx.CorrelationId -Outcome 'Issued')
+    Write-RbcAudit -EventName $script:RbcAudit.ApImportIssued -Context $ctx -Props @{
+        managedDeviceId = $importIdentityId
+        importStatus    = [string]$resp.state.deviceImportStatus
+        serialNumber    = ($serial ?? '')
+        groupTag        = ($groupTag ?? '')
     }
+    Initialize-RbcActionStatus -Context $ctx -ManagedDeviceId $importIdentityId
+
     Write-Output (([ordered]@{
-        correlationId = $corr
-        state         = 'issued:autopilot-register'
-        terminal      = $true
-        importedId    = $importedId
-        serialNumber  = $serial
-        groupTag      = $groupTag
-        source        = 'runbook'
+        correlationId    = $ctx.CorrelationId
+        actionType       = 'autopilot-register'
+        state            = 'issued'
+        terminal         = $false
+        importIdentityId = $importIdentityId
+        serialNumber     = $serial
+        groupTag         = $groupTag
+        source           = 'runbook'
     } | ConvertTo-Json -Compress))
-} catch {
-    Write-AuditRow -Table $audit -Pk $intune -Corr $corr -EventType 'action.dispatch.runner-failed' -Props @{
-        actionType   = 'autopilot-register'
-        serialNumber = $serial
-        groupTag     = ($groupTag ?? '')
-        error        = $_.Exception.Message
+}
+catch [RbcGraphError] {
+    $err = $_.Exception
+    if ($err.Kind -eq 'Permanent') {
+        [void](Set-RbcLedgerOutcome -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId -CorrelationId $ctx.CorrelationId -Outcome 'Failed' -FailureReason $err.Message)
+        Write-RbcAudit -EventName $script:RbcAudit.ApImportFailedPermanent -Context $ctx -Level 'Error' -Exception $err -Props @{
+            serialNumber = ($serial ?? '')
+            groupTag     = ($groupTag ?? '')
+        }
+        Write-RbcTerminalStatus -Context $ctx -State 'failed:permanent'
+        return
     }
+    Write-RbcAudit -EventName $script:RbcAudit.ApImportTransientError -Context $ctx -Level 'Warning' -Exception $err
     throw
 }

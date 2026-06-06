@@ -906,6 +906,41 @@ resource aaVarKeepUser 'Microsoft.Automation/automationAccounts/variables@2023-1
   properties: { isEncrypted: false, value: keepUserData ? 'true' : 'false' }
 }
 
+// Action status tracker — same table as the Function App runners so the
+// /api/actions/status endpoint sees runbook-issued rows too.
+resource aaVarStatusStorage 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'StatusStorageAccount'
+  properties: { isEncrypted: false, value: '"${storageProc.name}"' }
+}
+resource aaVarStatusTable 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'StatusTableName'
+  properties: { isEncrypted: false, value: '"${actionStatusTableName}"' }
+}
+
+// Wipe-runner default allowed-group; the BitLocker runbook falls back to
+// this when 'BitLockerAllowedGroupId' is not set, matching the
+// `bitlockerAllowedGroupId = allowedGroupId` default in the Function App config.
+resource aaVarAllowedGroup 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'AllowedGroupId'
+  properties: { isEncrypted: false, value: '"${allowedGroupId}"' }
+}
+resource aaVarBitLockerGroup 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'BitLockerAllowedGroupId'
+  properties: { isEncrypted: false, value: '"${bitlockerAllowedGroupId}"' }
+}
+
+// Idempotency rate-limiter cap (per-device, rolling 24h window). Matches
+// the Function App default of 5.
+resource aaVarMaxActions 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'MaxActionsPerDevicePerDay'
+  properties: { isEncrypted: false, value: '"5"' }
+}
+
 resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = if (enableRunbookVariant) {
   parent: automationAccount
   name: runbookName

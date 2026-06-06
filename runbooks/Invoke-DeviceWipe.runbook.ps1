@@ -1,133 +1,235 @@
+#requires -Version 7.2
 <#
 .SYNOPSIS
-    Azure Automation Runbook (PowerShell 7.2) — alternative wipe executor.
+    Azure Automation Runbook (PowerShell 7.2) — wipe capability executor with
+    functional parity to IntuneDeviceActions.Capabilities.Wipe.WipeActionRunner.
 
 .DESCRIPTION
-    Demo-variant of the wipe capability: invoked via Automation webhook with
-    the same envelope shape produced by WipeForwardingRunner. Hooks into the
-    same core infrastructure (audit table on storageProc, idempotency ledger
-    blob on storageProc) used by the WipeActionConsumerFunction.
+    Same envelope, same audit Table, same idempotency ledger blob, same status
+    tracker Table, and same post-wipe nudges (syncDevice + rebootNow) as the
+    .NET Function App runner. Hosted on Azure Automation it is a fully
+    interchangeable executor of the "wipe" capability.
 
-    This is a SECONDARY implementation that proves the plug-in model: the same
-    "wipe" capability can be executed by:
-      - the dotnet-isolated WipeActionRunner on the wipe-runner Function App, OR
-      - this PowerShell 7.2 runbook on Azure Automation,
-    without touching the HTTP front-end, the dispatcher, or any queue.
+    Pipeline (mirrors WipeActionRunner.RunAsync):
+        1. Resolve Entra directory object id
+        2. Allowed-group membership check
+        3. Ownership: resolve managedDevice via azureADDeviceId (fail-closed on ambiguity)
+        4. Idempotency reservation (auto-rearm + 24h rolling rate limit)
+        5. Issue Graph wipe → mark ledger Issued/Failed, audit, init status tracker
+        6. Post-wipe nudges: syncDevice + rebootNow with bounded retries
 
-    Wire-up (not enabled by default):
-      1) Create Automation Account with system-assigned MI.
-      2) Grant the Automation MI the same Graph app roles as uamiWipe:
-           DeviceManagementManagedDevices.PrivilegedOperations.All
-           DeviceManagementManagedDevices.Read.All
-           GroupMember.Read.All
-      3) Grant the Automation MI:
-           Blob Data Contributor on container 'action-ledger' (storageProc)
-           Table Data Contributor on storageProc (audit + actionstatus tables)
-      4) Import this runbook (RunbookType: PowerShell72), publish.
-      5) Create a webhook bound to this runbook (1-year expiry).
-      6) Set on idactions-proc app:  WipeRunbookWebhook__Url = <webhook-uri>
-         (Implementation note: a parallel WipeForwardingRunner variant could
-         POST to that webhook instead of enqueuing to wipe-action; left as a
-         documented hook to keep the default deploy lean.)
+    All helpers live in _lib/RunbookCore.ps1 which is **concatenated** in front
+    of this file by tools/Deploy-IntuneDeviceActions.ps1 at publish time. Do
+    NOT dot-source the lib here — Automation has no module-import mechanism
+    for runbook-local libraries.
 
-.NOTES
-    Requires modules in the Automation Account:
-      Az.Accounts >= 2.13
-      AzTable    >= 2.1
-      (Optional) Az.Storage for blob ledger ops
+.PARAMETER WebhookData
+    Provided by Azure Automation when invoked via webhook (the standard
+    pathway from RunbookWebhookRunner). Body is the ActionDispatchMessage
+    JSON envelope.
 
-    Auth: Connect-AzAccount -Identity (system-assigned MI of the Automation
-    Account). The MI's object id is what you grant Graph perms to.
+.PARAMETER EnvelopeJson
+    Direct-invocation form: pass the full ActionDispatchMessage JSON when
+    starting the runbook from the portal / az CLI for testing.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $false)]
-    [object]$WebhookData,
-
-    # Direct-invocation parameters (used when started from portal / az CLI
-    # without a webhook). If provided, take precedence over WebhookData.
-    [Parameter(Mandatory = $false)] [string]$IntuneDeviceId,
-    [Parameter(Mandatory = $false)] [string]$EntraDeviceId,
-    [Parameter(Mandatory = $false)] [string]$DeviceName,
-    [Parameter(Mandatory = $false)] [string]$CorrelationId,
-
-    # Test mode: skip the Graph wipe call (still authenticates + logs the
-    # full pipeline so the job is visible in the portal).
-    [Parameter(Mandatory = $false)] [bool]$TestMode = $false
+    [Parameter(Mandatory = $false)] [object]$WebhookData,
+    [Parameter(Mandatory = $false)] [string]$EnvelopeJson
 )
 
+Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
 
-# ─── Configuration (override via Automation variables if needed) ────────────
-$GraphApi              = 'https://graph.microsoft.com/v1.0'
-$LedgerStorageAccount  = Get-AutomationVariable -Name 'LedgerStorageAccount'     # e.g. idactionsstpqupxwx6egkr3e
-$LedgerContainer       = Get-AutomationVariable -Name 'LedgerContainer'          # 'action-ledger'
-$AuditStorageAccount   = Get-AutomationVariable -Name 'AuditStorageAccount'      # same as ledger
-$AuditTableName        = Get-AutomationVariable -Name 'AuditTableName'           # 'auditevents'
-$KeepEnrollmentData    = [bool](Get-AutomationVariable -Name 'KeepEnrollmentData')
-$KeepUserData          = [bool](Get-AutomationVariable -Name 'KeepUserData')
+# >>> RBC-LIB-INSERTION-POINT <<<
+# tools/Deploy-IntuneDeviceActions.ps1 replaces the line above with the full
+# content of runbooks/_lib/RunbookCore.ps1 before uploading to Azure
+# Automation. Keep this marker on its own line; do not edit.
 
-# ─── Envelope resolution ────────────────────────────────────────────────────
-if ($IntuneDeviceId) {
-    $correlationId  = if ($CorrelationId) { $CorrelationId } else { [guid]::NewGuid().ToString() }
-    $intuneDeviceId = $IntuneDeviceId
-    $entraDeviceId  = $EntraDeviceId
-    $deviceName     = $DeviceName
-    Write-Output "runbook-wipe source=direct mode=$(if($TestMode){'TEST'}else{'LIVE'})"
-}
-elseif ($WebhookData -and $WebhookData.RequestBody) {
-    $envelope        = $WebhookData.RequestBody | ConvertFrom-Json
-    $correlationId   = $envelope.correlationId
-    $intuneDeviceId  = $envelope.payload.intuneDeviceId
-    $entraDeviceId   = $envelope.payload.entraDeviceId
-    $deviceName      = $envelope.payload.deviceName
-    Write-Output "runbook-wipe source=webhook"
-}
-else {
-    throw 'Runbook requires either -WebhookData (from webhook) or -IntuneDeviceId (direct invocation).'
+# ─── Envelope ingest ───────────────────────────────────────────────────────
+$rawJson = if ($EnvelopeJson) {
+    $EnvelopeJson
+} elseif ($WebhookData) {
+    # WebhookData.RequestBody is the verbatim POST body posted by RunbookWebhookRunner.
+    [string]$WebhookData.RequestBody
+} else {
+    throw 'Runbook requires either -WebhookData (webhook invocation) or -EnvelopeJson (direct).'
 }
 
-Write-Output "runbook-wipe start corr=$correlationId intune=$intuneDeviceId name=$deviceName"
-Write-Output "config: ledger=$LedgerStorageAccount/$LedgerContainer audit=$AuditStorageAccount/$AuditTableName keepEnrollment=$KeepEnrollmentData keepUser=$KeepUserData"
+$env = ConvertFrom-RbcEnvelope -Json $rawJson
+foreach ($req in @('correlationId','intuneDeviceId','entraDeviceId')) {
+    $value = $env[(($req.Substring(0,1).ToUpperInvariant()) + $req.Substring(1))]
+    if ([string]::IsNullOrWhiteSpace([string]$value)) { throw "Envelope missing required field '$req'." }
+}
 
-# ─── Connect to Azure via system-assigned MI ────────────────────────────────
-Connect-AzAccount -Identity | Out-Null
-Write-Output "az auth: connected as $((Get-AzContext).Account.Id)"
+$ctx = New-RbcContext `
+    -ActionType     'wipe' `
+    -CorrelationId  $env.CorrelationId `
+    -IntuneDeviceId $env.IntuneDeviceId `
+    -EntraDeviceId  $env.EntraDeviceId `
+    -DeviceName     $env.DeviceName `
+    -ForceRearm     $env.ForceRearm
 
-# ─── Acquire Graph token via the MI ─────────────────────────────────────────
-$tokenObj = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com'
-Write-Output "graph token: acquired (expires $($tokenObj.ExpiresOn))"
+Write-RbcInfo "wipe runbook starting" @{
+    corr = $ctx.CorrelationId; intune = $ctx.IntuneDeviceId; entra = $ctx.EntraDeviceId; device = $ctx.DeviceName
+}
 
-if ($TestMode) {
-    Write-Output "TEST MODE: skipping Graph wipe POST. Pipeline OK."
-    Write-Output "runbook-wipe done corr=$correlationId (test)"
+# ─── Authenticate (system-assigned MI) ─────────────────────────────────────
+Disable-AzContextAutosave -Scope Process | Out-Null
+$null = Connect-AzAccount -Identity -ErrorAction Stop
+
+# ─── 1) Resolve Entra device object id ─────────────────────────────────────
+try {
+    $deviceObjId = Resolve-RbcDeviceObjectId -EntraDeviceId $ctx.EntraDeviceId
+} catch [RbcGraphError] {
+    if ($_.Exception.Kind -eq 'Transient') {
+        Write-RbcWarn "Transient error resolving device — will rethrow for retry" @{ status=$_.Exception.StatusCode }
+        throw
+    }
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedDeviceResolveFailed -Context $ctx -Level 'Error' -Exception $_.Exception
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:device-resolve-failed'
+    return
+}
+if (-not $deviceObjId) {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedDeviceNotInEntra -Context $ctx -Level 'Warning'
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:device-not-in-entra'
     return
 }
 
-$headers  = @{
-    Authorization  = "Bearer $($tokenObj.Token)"
-    'Content-Type' = 'application/json'
+# ─── 2) Group membership check ─────────────────────────────────────────────
+if (-not $ctx.AllowedGroupId) {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedGroupCheckFailed -Context $ctx -Level 'Error' -Props @{
+        reason = "AllowedGroupId Automation Variable not set"
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:group-check-failed'
+    return
 }
-
-# ─── Issue the wipe ─────────────────────────────────────────────────────────
-$wipeBody = @{
-    keepEnrollmentData = $KeepEnrollmentData
-    keepUserData       = $KeepUserData
-    macOsUnlockCode    = $null
-} | ConvertTo-Json
-
-$uri = "$GraphApi/deviceManagement/managedDevices/$intuneDeviceId/wipe"
 try {
-    Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $wipeBody | Out-Null
-    Write-Output "runbook-wipe issued corr=$correlationId intune=$intuneDeviceId"
+    $inGroup = Test-RbcDeviceInAllowedGroup -DeviceObjectId $deviceObjId -AllowedGroupId $ctx.AllowedGroupId
+} catch [RbcGraphError] {
+    if ($_.Exception.Kind -eq 'Transient') { throw }
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedGroupCheckFailed -Context $ctx -Level 'Error' -Exception $_.Exception
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:group-check-failed'
+    return
 }
-catch {
-    Write-Error "runbook-wipe failed corr=$correlationId intune=$intuneDeviceId err=$($_.Exception.Message)"
+if (-not $inGroup) {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedNotInAllowedGroup -Context $ctx -Level 'Warning'
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:not-in-allowed-group'
+    return
+}
+
+# ─── 3) Ownership: managedDevice resolve (server-authoritative) ────────────
+try {
+    $managedId = Resolve-RbcManagedDeviceId -EntraDeviceId $ctx.EntraDeviceId
+} catch [RbcGraphError] {
+    if ($_.Exception.Kind -eq 'Transient') { throw }
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedManagedDeviceResolveFailed -Context $ctx -Level 'Error' -Exception $_.Exception
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:managed-device-resolve-failed'
+    return
+}
+if (-not $managedId) {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedOwnershipMismatch -Context $ctx -Level 'Warning'
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:ownership-mismatch'
+    return
+}
+
+# ─── 4) Idempotency reservation (with auto-rearm + rate limiting) ──────────
+$reserve = Reserve-RbcLedger -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId `
+                              -CorrelationId $ctx.CorrelationId -ForceRearm $ctx.ForceRearm
+$state = [string]$reserve.State
+$entry = $reserve.Entry
+
+if ($state -eq 'RateLimited') {
+    Write-RbcAudit -EventName $script:RbcAudit.DeniedRateLimited -Context $ctx -Level 'Warning' -Props @{
+        recentActionsInWindow     = $reserve.RecentActionsInWindow
+        maxActionsPerDevicePerDay = $reserve.MaxActionsPerDevicePerDay
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:rate-limited' -ManagedDeviceId $managedId
+    return
+}
+
+if ([string]$reserve.Rearmed -ne 'None') {
+    $rearmEvent = switch ([string]$reserve.Rearmed) {
+        'AfterSuccess'     { $script:RbcAudit.LedgerRearmedAfterSuccess }
+        'AfterFailure'     { $script:RbcAudit.LedgerRearmedAfterFailure }
+        'AfterPollTimeout' { $script:RbcAudit.LedgerRearmedAfterTimeout }
+        'Forced'           { $script:RbcAudit.LedgerRearmedForced }
+        default            { $script:RbcAudit.LedgerRearmedAfterSuccess }
+    }
+    Write-RbcAudit -EventName $rearmEvent -Context $ctx -Props @{
+        actionSequence        = [int]$entry.ActionSequence
+        previousTerminalState = ([string]$entry.LastTerminalState ?? '(unknown)')
+        rearmReason           = [string]$reserve.Rearmed
+    }
+}
+
+if ($state -eq 'Issued') {
+    Write-RbcAudit -EventName $script:RbcAudit.ActionAlreadyIssued -Context $ctx -Props @{
+        originalCorrelationId = [string]$entry.CorrelationId
+        actionSequence        = [int]$entry.ActionSequence
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:already-issued' -ManagedDeviceId $managedId
+    return
+}
+if ($state -eq 'Reserved' -and [string]$entry.CorrelationId -ne $ctx.CorrelationId) {
+    Write-RbcAudit -EventName $script:RbcAudit.ActionInProgressElsewhere -Context $ctx -Level 'Warning' -Props @{
+        originalCorrelationId = [string]$entry.CorrelationId
+    }
+    Write-RbcTerminalStatus -Context $ctx -State 'denied:in-progress-elsewhere' -ManagedDeviceId $managedId
+    return
+}
+
+# ─── 5) Execute the wipe ───────────────────────────────────────────────────
+$wipeUri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$managedId/wipe"
+$wipeBody = @{
+    keepEnrollmentData = $ctx.KeepEnrollmentData
+    keepUserData       = $ctx.KeepUserData
+}
+try {
+    Invoke-RbcGraphApi -Method POST -Uri $wipeUri -Body $wipeBody | Out-Null
+    [void](Set-RbcLedgerOutcome -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId -CorrelationId $ctx.CorrelationId -Outcome 'Issued')
+    Write-RbcAudit -EventName $script:RbcAudit.WipeIssued -Context $ctx -Props @{
+        managedDeviceId    = $managedId
+        keepEnrollmentData = $ctx.KeepEnrollmentData
+        keepUserData       = $ctx.KeepUserData
+    }
+    Initialize-RbcActionStatus -Context $ctx -ManagedDeviceId $managedId
+}
+catch [RbcGraphError] {
+    $err = $_.Exception
+    if ($err.Kind -eq 'Permanent') {
+        [void](Set-RbcLedgerOutcome -Context $ctx -IntuneDeviceId $ctx.IntuneDeviceId -CorrelationId $ctx.CorrelationId -Outcome 'Failed' -FailureReason $err.Message)
+        Write-RbcAudit -EventName $script:RbcAudit.WipeFailedPermanent -Context $ctx -Level 'Error' -Exception $err -Props @{
+            managedDeviceId = $managedId
+        }
+        Write-RbcTerminalStatus -Context $ctx -State 'failed:permanent' -ManagedDeviceId $managedId
+        return
+    }
+    Write-RbcAudit -EventName $script:RbcAudit.WipeTransientError -Context $ctx -Level 'Warning' -Exception $err -Props @{
+        managedDeviceId = $managedId
+    }
     throw
 }
 
-# Audit/ledger writes intentionally minimal in this demo — production wiring
-# would use AzTable / Az.Storage to mirror the WipeActionRunner.MarkIssued
-# semantics so the portal sees runbook-issued wipes in the same trail.
-Write-Output "runbook-wipe done corr=$correlationId"
+# ─── 6) Post-wipe nudges (best-effort: syncDevice + rebootNow) ─────────────
+# Bounded retries with backoff, total ≤ ~2 minutes to stay well within the
+# Automation job timeout. Failures here NEVER reverse the issued wipe.
+if ($ctx.SyncFallbackDelaySeconds -gt 0 -and $ctx.SyncFallbackMaxAttempts -gt 0) {
+    Start-Sleep -Seconds $ctx.SyncFallbackDelaySeconds
+    Invoke-RbcGraphPostNudge -Context $ctx -ManagedDeviceId $managedId -Action 'syncDevice' `
+                             -MaxAttempts $ctx.SyncFallbackMaxAttempts
+}
+if ($ctx.RebootFallbackDelaySeconds -gt 0 -and $ctx.RebootFallbackMaxAttempts -gt 0) {
+    Start-Sleep -Seconds $ctx.RebootFallbackDelaySeconds
+    Invoke-RbcGraphPostNudge -Context $ctx -ManagedDeviceId $managedId -Action 'rebootNow' `
+                             -MaxAttempts $ctx.RebootFallbackMaxAttempts
+}
+
+Write-Output (([ordered]@{
+    correlationId   = $ctx.CorrelationId
+    actionType      = 'wipe'
+    state           = 'issued'
+    terminal        = $false
+    managedDeviceId = $managedId
+    source          = 'runbook'
+} | ConvertTo-Json -Compress))

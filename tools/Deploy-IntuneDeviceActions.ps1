@@ -437,24 +437,51 @@ function Invoke-RunbookPublish {
         Write-Warn2 "runbooks/ folder not found; skipping."
         return
     }
+    # Load the shared toolkit. Each runbook contains a `# >>> RBC-LIB-INSERTION-POINT <<<`
+    # marker placed immediately after its `param()` block; we substitute the
+    # marker with the full toolkit content so the script uploaded to Azure
+    # Automation is self-contained (AA has no module-import mechanism for
+    # runbook-local libraries).
+    $libPath = Join-Path $runbookDir '_lib\RunbookCore.ps1'
+    if (-not (Test-Path $libPath)) {
+        Write-Err "Shared toolkit not found: $libPath"; return
+    }
+    $libContent = Get-Content -LiteralPath $libPath -Raw
+    $marker     = '# >>> RBC-LIB-INSERTION-POINT <<<'
+    $tmpDir     = Join-Path $env:TEMP "idactions-runbook-merge-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+
     # Map: runbook name in AA  ->  source script path
     $map = @(
         @{ Name = 'Invoke-DeviceWipe';          File = 'Invoke-DeviceWipe.runbook.ps1' }
         @{ Name = 'Invoke-AutopilotRegister';   File = 'Invoke-AutopilotRegister.runbook.ps1' }
         @{ Name = 'Invoke-RotateBitLockerKey';  File = 'Invoke-RotateBitLockerKey.runbook.ps1' }
     )
-    foreach ($m in $map) {
-        $src = Join-Path $runbookDir $m.File
-        if (-not (Test-Path $src)) { Write-Warn2 "Source missing: $($m.File); skipping $($m.Name)."; continue }
-        Write-Host "    -> $($m.Name)  ($($m.File))" -ForegroundColor Gray
-        $up = & az automation runbook replace-content -g $ResourceGroup `
-            --automation-account-name $aaName --name $m.Name `
-            --content "@$src" --only-show-errors 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Err "replace-content failed for $($m.Name): $up"; continue }
-        $pub = & az automation runbook publish -g $ResourceGroup `
-            --automation-account-name $aaName --name $m.Name --only-show-errors 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Err "publish failed for $($m.Name): $pub"; continue }
-        Write-Ok "$($m.Name) published"
+    try {
+        foreach ($m in $map) {
+            $src = Join-Path $runbookDir $m.File
+            if (-not (Test-Path $src)) { Write-Warn2 "Source missing: $($m.File); skipping $($m.Name)."; continue }
+            $body = Get-Content -LiteralPath $src -Raw
+            if ($body -notmatch [regex]::Escape($marker)) {
+                Write-Err "Runbook $($m.File) is missing the lib insertion marker; skipping."
+                continue
+            }
+            $merged = $body.Replace($marker, $libContent)
+            $mergedPath = Join-Path $tmpDir ($m.File)
+            Set-Content -LiteralPath $mergedPath -Value $merged -Encoding UTF8
+            Write-Host "    -> $($m.Name)  (merged $($m.File) + _lib/RunbookCore.ps1 = $($merged.Length) chars)" -ForegroundColor Gray
+            $up = & az automation runbook replace-content -g $ResourceGroup `
+                --automation-account-name $aaName --name $m.Name `
+                --content "@$mergedPath" --only-show-errors 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-Err "replace-content failed for $($m.Name): $up"; continue }
+            $pub = & az automation runbook publish -g $ResourceGroup `
+                --automation-account-name $aaName --name $m.Name --only-show-errors 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-Err "publish failed for $($m.Name): $pub"; continue }
+            Write-Ok "$($m.Name) published"
+        }
+    }
+    finally {
+        if (Test-Path $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 

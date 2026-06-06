@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "9587601847594719361"
+      "templateHash": "13158174396300804565"
     }
   },
   "parameters": {
@@ -1621,6 +1621,72 @@
       "properties": {
         "isEncrypted": false,
         "value": "[if(parameters('keepUserData'), 'true', 'false')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'StatusStorageAccount')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', variables('stProcName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stProcName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'StatusTableName')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('actionStatusTableName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'AllowedGroupId')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('allowedGroupId'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'BitLockerAllowedGroupId')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('bitlockerAllowedGroupId'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'MaxActionsPerDevicePerDay')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "\"5\""
       },
       "dependsOn": [
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"

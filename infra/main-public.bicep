@@ -929,6 +929,32 @@ resource aaVarKeepUser 'Microsoft.Automation/automationAccounts/variables@2023-1
   properties: { isEncrypted: false, value: keepUserData ? 'true' : 'false' }
 }
 
+resource aaVarStatusStorage 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'StatusStorageAccount'
+  properties: { isEncrypted: false, value: '"${storageProc.name}"' }
+}
+resource aaVarStatusTable 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'StatusTableName'
+  properties: { isEncrypted: false, value: '"${actionStatusTableName}"' }
+}
+resource aaVarAllowedGroup 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'AllowedGroupId'
+  properties: { isEncrypted: false, value: '"${allowedGroupId}"' }
+}
+resource aaVarBitLockerGroup 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'BitLockerAllowedGroupId'
+  properties: { isEncrypted: false, value: '"${bitlockerAllowedGroupId}"' }
+}
+resource aaVarMaxActions 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'MaxActionsPerDevicePerDay'
+  properties: { isEncrypted: false, value: '"5"' }
+}
+
 resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = if (enableRunbookVariant) {
   parent: automationAccount
   name: runbookName
