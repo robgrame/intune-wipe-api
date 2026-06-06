@@ -493,7 +493,8 @@ essere override come app settings della singola Function App.
 | `Wipe__KeepUserData` | `false` | Mantiene dati utente |
 | `ActionStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc) |
 | `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `action-ledger` admin (solo Web) |
-| `WipeRunbook__WebhookUrl` | _(vuoto)_ | Webhook del runbook Automation per la capability `wipe-runbook` (trattare come secret, Key Vault reference raccomandato) |
+| `WipeRunbook__WebhookUrl` | _(vuoto)_ | **Deprecato** — usato dal vecchio `WipeRunbookForwardingRunner` per la sola capability `wipe-runbook`. Preferire `RunbookBridge:Routes:wipe-runbook` (vedi sotto). |
+| `RunbookBridge:Routes:<actionType>` | _(vuoto)_ | **Meccanismo plug-in** per collegare una runbook al dispatcher. Esempio: `RunbookBridge:Routes:lock-runbook = https://<webhook>`. Una chiave per ciascuna capability runbook. Trattare come secret (Key Vault reference raccomandato). Cambia richiede restart del Proc app. |
 | `BitLocker__AllowedGroupId` | _(default = `Wipe__AllowedGroupId`)_ | ObjectId gruppo Entra autorizzato alla rotazione recovery key (capability `bitlocker-rotate`) |
 | `Graph__TenantId` | tenant corrente | Tenant per i token Graph |
 | `Graph__ManagedIdentityClientId` | _(da bicep)_ | clientId della UAMI |

@@ -15,7 +15,7 @@ var host = new HostBuilder()
     .ConfigureAppConfiguration((ctx, c) => c.AddIntuneDeviceActionsAppConfig(roleHint: "proc"))
     .ConfigureServices((ctx, services) =>
     {
-        services.AddIntuneDeviceActionsCore();
+        services.AddIntuneDeviceActionsCore(ctx.Configuration);
         services.AddIntuneDeviceActionsOpenTelemetry(role: "proc");
         services.AddGraphClient();                // bare GraphServiceClient for the wipe probe (no privileged execution surface here)
         services.AddActionIdempotency();          // processor may inspect ledger entry on prep

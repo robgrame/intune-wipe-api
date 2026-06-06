@@ -71,12 +71,27 @@ sostituire la pipeline produzione.
    - `DeviceManagementManagedDevices.Read.All` (resolve managedDevice)
    - `DeviceManagementServiceConfig.ReadWrite.All` (autopilot import)
    - `Device.Read.All`, `GroupMember.Read.All`
-4. Per agganciarli al dispatcher: creare un webhook su ognuna delle 3
-   runbook (1-year expiry) e implementare un `<Capability>RunbookForwardingRunner`
-   alternativo che faccia `POST` al webhook invece di enqueue su Service
-   Bus (lo `WipeRunbookForwardingRunner.cs` esistente è il template).
-   Lasciato come hook documentato per non duplicare le superfici di audit
-   in produzione.
+4. **Per agganciarli al dispatcher (procedura ufficiale, zero-code)**:
+   1. Crea un webhook sulla runbook (`New-AzAutomationWebhook -RunbookName Invoke-DeviceWipe -Name wipe-bridge -ExpiryTime (Get-Date).AddYears(1) -IsEnabled $true …`) e copia l'URI restituito (è mostrato UNA sola volta).
+   2. Inserisci l'URI in App Configuration (Key Vault reference raccomandata):
+      `RunbookBridge:Routes:wipe-runbook = https://…`
+      `RunbookBridge:Routes:autopilot-runbook = https://…`
+      `RunbookBridge:Routes:bitlocker-runbook = https://…`
+   3. Restart dell'app `idactions-proc` (anche un Flex cold-start basta).
+
+   Il dispatcher esistente (`ActionDispatchFunction` nel core, immutabile)
+   risolverà l'`actionType` tramite il `RunbookWebhookRunner` generico
+   registrato in automatico al boot da
+   `services.AddIntuneDeviceActionsCore(ctx.Configuration)` →
+   `RunbookBridgeExtensions.AddRunbookBridgeRunners`. Nessuna nuova classe
+   C# da scrivere, nessuna modifica al Bicep, nessuna nuova coda Service
+   Bus. Per attivare la capability per il client: aggiungi `wipe-runbook`
+   (o l'`actionType` corrispondente) ad `Actions:AllowedTypes` (CSV).
+
+   > La vecchia classe `WipeRunbookForwardingRunner` (in
+   > `src/Capabilities.Wipe/Runners/`) è ancora presente per
+   > retrocompatibilità ma è deprecata: il pattern preferito è la
+   > registrazione data-driven via App Config.
 
 ## Test locale di una runbook
 

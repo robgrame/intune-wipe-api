@@ -66,8 +66,15 @@ public static class HostBuilderExtensions
     /// audit pipeline, AppConfig refresh middleware. Per-role hosts call this
     /// first, then opt into the storage/Graph helpers + runners they need via
     /// the dedicated methods below.
+    /// <para>
+    /// When <paramref name="cfg"/> is supplied, also auto-registers any
+    /// configured runbook-bridge runners
+    /// (<see cref="RunbookBridgeExtensions.AddRunbookBridgeRunners"/>) so a
+    /// dispatcher role can attach Azure Automation runbooks to Service Bus
+    /// queues purely via App Configuration, with no per-capability code.
+    /// </para>
     /// </summary>
-    public static IServiceCollection AddIntuneDeviceActionsCore(this IServiceCollection services)
+    public static IServiceCollection AddIntuneDeviceActionsCore(this IServiceCollection services, IConfiguration? cfg = null)
     {
         services.AddSingleton<AppConfigRefreshMiddleware>();
         services.AddSingleton<ServiceBusTraceContextMiddleware>();
@@ -130,6 +137,14 @@ public static class HostBuilderExtensions
                 return new AuditTableSink(null, sp.GetRequiredService<ILogger<AuditTableSink>>());
             }
         });
+
+        // Auto-register runbook-bridge runners from App Configuration
+        // (RunbookBridge:Routes:<actionType>=<webhookUrl>). When cfg is null
+        // (e.g. unit tests calling the parameterless overload), this is a no-op.
+        if (cfg is not null)
+        {
+            services.AddRunbookBridgeRunners(cfg);
+        }
 
         return services;
     }

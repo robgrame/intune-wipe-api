@@ -109,6 +109,29 @@ The HTTP intake gates `actionType` against the configured allowlist
 (`Actions:AllowedTypes`, CSV). Enabling a new capability in an environment is
 an App Configuration change, not a code change.
 
+### Runbook-backed capabilities (Azure Automation)
+
+A capability can also be implemented as an Azure Automation PowerShell 7.x
+runbook instead of a Function App. The core ships a **data-driven bridge**
+(`RunbookWebhookRunner` + `RunbookBridgeExtensions.AddRunbookBridgeRunners`
+in `src/Shared/Actions/`) auto-wired from `AddIntuneDeviceActionsCore(cfg)`.
+
+To attach a new runbook-backed capability:
+
+1. Author the runbook (e.g. `runbooks/Invoke-MyAction.runbook.ps1`) and
+   publish it to the Automation Account.
+2. Create a webhook on that runbook and capture its URI.
+3. Add a single App Configuration key (Key Vault reference recommended):
+   `RunbookBridge:Routes:<actionType> = https://<webhook-uri>`
+4. Restart the Proc app (Flex cold-start is enough). The dispatcher will
+   resolve `<actionType>` via the auto-registered `RunbookWebhookRunner`
+   and POST envelopes to the webhook.
+
+**Forbidden**: do not add per-runbook `IActionRunner` classes
+(`FooRunbookForwardingRunner`) to any capability project — that pattern
+predates the generic bridge and is being retired. Use the App Config route
+instead so a new runbook capability requires zero C# changes.
+
 ### Privilege isolation
 
 Every privileged Graph capability runs on its own Function App with its own
