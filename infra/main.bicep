@@ -918,6 +918,37 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
   }
 }
 
+// ── Runbook plug-in variants for autopilot-register and bitlocker-rotate ────
+// Same demo intent as the wipe runbook: prove that any capability in the
+// capability-plugin architecture can be implemented on a different runtime
+// (Azure Automation PowerShell 7.2) without touching the core router or
+// Service Bus topology. Content is published out-of-band by
+// tools/Deploy-IntuneDeviceActions.ps1 via `az automation runbook
+// replace-content` + `publish` so the Bicep stays storage-account-free.
+resource runbookAutopilot 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Invoke-AutopilotRegister'
+  location: location
+  properties: {
+    runbookType: 'PowerShell72'
+    logVerbose: true
+    logProgress: true
+    description: 'Alternative autopilot-register executor (demo plug-in variant). Same envelope as AutopilotRegisterRunner.'
+  }
+}
+
+resource runbookBitLocker 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Invoke-RotateBitLockerKey'
+  location: location
+  properties: {
+    runbookType: 'PowerShell72'
+    logVerbose: true
+    logProgress: true
+    description: 'Alternative bitlocker-rotate executor (demo plug-in variant). Same envelope as BitLockerRotateRunner.'
+  }
+}
+
 resource raAaLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableRunbookVariant) {
   name: guid(ledgerContainer.id, automationAccount.id, 'aa-blob-ledger')
   scope: ledgerContainer

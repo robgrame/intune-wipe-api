@@ -405,6 +405,42 @@ function Invoke-SmokeTest {
     }
 }
 
+# -- Runbook content publish (optional, when enableRunbookVariant=true) ------
+function Invoke-RunbookPublish {
+    $aaName = (& az automation account list -g $ResourceGroup `
+        --query "[?starts_with(name, '$NamePrefix-aa-')].name | [0]" `
+        -o tsv --only-show-errors)
+    if (-not $aaName) {
+        Write-Warn2 "No Automation Account in $ResourceGroup; skipping runbook publish (enableRunbookVariant=false)."
+        return
+    }
+    Write-Step "Publishing runbook content -> $aaName"
+    $runbookDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'runbooks'
+    if (-not (Test-Path $runbookDir)) {
+        Write-Warn2 "runbooks/ folder not found; skipping."
+        return
+    }
+    # Map: runbook name in AA  ->  source script path
+    $map = @(
+        @{ Name = 'Invoke-DeviceWipe';          File = 'Invoke-DeviceWipe.runbook.ps1' }
+        @{ Name = 'Invoke-AutopilotRegister';   File = 'Invoke-AutopilotRegister.runbook.ps1' }
+        @{ Name = 'Invoke-RotateBitLockerKey';  File = 'Invoke-RotateBitLockerKey.runbook.ps1' }
+    )
+    foreach ($m in $map) {
+        $src = Join-Path $runbookDir $m.File
+        if (-not (Test-Path $src)) { Write-Warn2 "Source missing: $($m.File); skipping $($m.Name)."; continue }
+        Write-Host "    -> $($m.Name)  ($($m.File))" -ForegroundColor Gray
+        $up = & az automation runbook replace-content -g $ResourceGroup `
+            --automation-account-name $aaName --name $m.Name `
+            --content "@$src" --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Err "replace-content failed for $($m.Name): $up"; continue }
+        $pub = & az automation runbook publish -g $ResourceGroup `
+            --automation-account-name $aaName --name $m.Name --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Err "publish failed for $($m.Name): $pub"; continue }
+        Write-Ok "$($m.Name) published"
+    }
+}
+
 # -- Graph admin consent ---------------------------------------------------
 function Invoke-GraphConsent {
     Write-Step "Granting Microsoft Graph app roles to UAMIs"
@@ -470,6 +506,7 @@ try {
     Invoke-Publish
     Invoke-InfraDeploy
     Invoke-ZipDeploy
+    Invoke-RunbookPublish
     if ($SkipGraphConsent) {
         Write-Warn2 'Skipping Graph consent (-SkipGraphConsent).'
     } else {

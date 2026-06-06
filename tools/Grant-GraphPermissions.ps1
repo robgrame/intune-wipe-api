@@ -174,4 +174,58 @@ Write-Host "  Granted: $totalGranted" -ForegroundColor Green
 Write-Host "  Skipped: $totalSkipped (already present)" -ForegroundColor Yellow
 Write-Host "  Failed:  $totalFailed" -ForegroundColor $(if ($totalFailed) {'Red'} else {'DarkGray'})
 Write-Host "================================="
+
+# ── Optional: Automation Account SystemAssigned MI (runbook variant) ─────────
+# The 3 runbooks (Invoke-DeviceWipe / Invoke-AutopilotRegister /
+# Invoke-RotateBitLockerKey) authenticate as the Automation Account's
+# system-assigned MI. We grant the union of the 3 capability role sets so a
+# single MI can execute any of them.
+Write-Step "Optional: Automation Account (runbook variant)"
+$aaList = az automation account list -g $ResourceGroup -o json 2>$null | ConvertFrom-Json
+$aa = @($aaList) | Where-Object { $_.name -like "$NamePrefix-aa-*" } | Select-Object -First 1
+if (-not $aa) {
+    Write-Warn2 "No Automation Account ($NamePrefix-aa-*) found in $ResourceGroup -- skipping (enableRunbookVariant=false)."
+} else {
+    $aaPrincipalId = $aa.identity.principalId
+    if (-not $aaPrincipalId) {
+        Write-Warn2 "Automation Account $($aa.name) has no SystemAssigned identity -- skipping."
+    } else {
+        Write-Ok "Automation Account: $($aa.name)  (principalId $aaPrincipalId)"
+        $aaRoles = @(
+            'DeviceManagementManagedDevices.PrivilegedOperations.All',
+            'DeviceManagementManagedDevices.Read.All',
+            'DeviceManagementServiceConfig.ReadWrite.All',
+            'Device.Read.All',
+            'GroupMember.Read.All'
+        )
+        $aaExisting = az rest --method GET `
+            --url "https://graph.microsoft.com/v1.0/servicePrincipals/$aaPrincipalId/appRoleAssignments" `
+            -o json | ConvertFrom-Json
+        $aaExistingRoleIds = @($aaExisting.value | ForEach-Object { $_.appRoleId })
+        foreach ($roleName in $aaRoles) {
+            $appRoleId = $roleMap[$roleName]
+            if (-not $appRoleId) { Write-Err2 "Role not found: $roleName"; $totalFailed++; continue }
+            if ($aaExistingRoleIds -contains $appRoleId) {
+                Write-Warn2 "Already assigned: $roleName"; $totalSkipped++; continue
+            }
+            $body = @{ principalId=$aaPrincipalId; resourceId=$graphSp.id; appRoleId=$appRoleId } | ConvertTo-Json -Compress
+            $tmp = [IO.Path]::GetTempFileName()
+            try {
+                Set-Content -Path $tmp -Value $body -Encoding ASCII -NoNewline
+                $resp = az rest --method POST `
+                    --url "https://graph.microsoft.com/v1.0/servicePrincipals/$aaPrincipalId/appRoleAssignments" `
+                    --headers "Content-Type=application/json" --body "@$tmp" 2>&1
+                if ($LASTEXITCODE -eq 0) { Write-Ok "Granted: $roleName"; $totalGranted++ }
+                else { Write-Err2 "Failed: $roleName  ->  $resp"; $totalFailed++ }
+            } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Write-Host ""
+Write-Host "======= Final Summary (incl. AA if any) =======" -ForegroundColor Cyan
+Write-Host "  Granted: $totalGranted" -ForegroundColor Green
+Write-Host "  Skipped: $totalSkipped (already present)" -ForegroundColor Yellow
+Write-Host "  Failed:  $totalFailed" -ForegroundColor $(if ($totalFailed) {'Red'} else {'DarkGray'})
+Write-Host "==============================================="
 if ($totalFailed) { exit 1 }

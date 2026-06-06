@@ -427,6 +427,12 @@ Tutte le impostazioni sono centralizzate in **Azure App Configuration** (lette
 da ogni app via `AppConfigRefreshMiddleware` con refresh sentinel) e possono
 essere override come app settings della singola Function App.
 
+> **Perché ogni Function App ha comunque diverse chiavi in `siteConfig.appSettings`?**
+> Sono il **bootstrap minimo + i default**. Tre famiglie:
+> 1. **Bootstrap obbligatorio del runtime Functions** — letto _prima_ che parta l'host (App Config non è ancora caricato): `AzureWebJobsStorage__*`, `APPLICATIONINSIGHTS_CONNECTION_STRING`, `AZURE_CLIENT_ID`.
+> 2. **Bootstrap del provider App Configuration stesso** — `AppConfig__Endpoint` (URI dello store) e `App__Role` (etichetta usata per filtrare le key-value: `roleHint:"web"|"proc"|"wipe"|"autopilot"|"bitlocker"`).
+> 3. **Default fallback** — tutto il resto (`ServiceBus__*`, `Idempotency__*`, `Audit__*`, `Graph__*`, `BitLocker__AllowedGroupId`, …). Sono i valori di partenza: il provider App Config li **sovrascrive a runtime** non appena trova le chiavi corrispondenti nello store, **senza redeploy**. Le 5 app hanno il ruolo `App Configuration Data Reader` su `appConfig` via UAMI (vedi `raAppConfigWeb/Proc/Wipe/Autopilot/BitLocker`).
+
 ### Service Bus & storage
 
 | Setting | Default | Descrizione |
@@ -572,8 +578,10 @@ customEvents
 ├── tools/
 │   ├── Deploy-IntuneDeviceActions.ps1  # orchestrator end-to-end
 │   └── Grant-GraphPermissions.ps1      # grant idempotente dei ruoli Graph alle UAMI
-├── runbooks/                           # variante Automation PowerShell 7.2
+├── runbooks/                           # variante Automation PowerShell 7.2 (demo plug-in)
 │   ├── Invoke-DeviceWipe.runbook.ps1
+│   ├── Invoke-AutopilotRegister.runbook.ps1
+│   ├── Invoke-RotateBitLockerKey.runbook.ps1
 │   └── README.md
 ├── client/
 │   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint)

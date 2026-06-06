@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "10539495455029410876"
+      "templateHash": "7757225517540590966"
     }
   },
   "parameters": {
@@ -1671,6 +1671,38 @@
         "logVerbose": true,
         "logProgress": true,
         "description": "Alternative wipe executor (demo plug-in variant). Same envelope as WipeActionConsumerFunction."
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/runbooks",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Invoke-AutopilotRegister')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "runbookType": "PowerShell72",
+        "logVerbose": true,
+        "logProgress": true,
+        "description": "Alternative autopilot-register executor (demo plug-in variant). Same envelope as AutopilotRegisterRunner."
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/runbooks",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Invoke-RotateBitLockerKey')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "runbookType": "PowerShell72",
+        "logVerbose": true,
+        "logProgress": true,
+        "description": "Alternative bitlocker-rotate executor (demo plug-in variant). Same envelope as BitLockerRotateRunner."
       },
       "dependsOn": [
         "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
