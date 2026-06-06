@@ -137,6 +137,9 @@ param storageAllowedIpRanges array = []
 @description('Disambiguation suffix appended to globally-unique resource names (Storage, App Configuration, Service Bus, Function App FQDN, etc.). Leave default for deterministic per-RG hash; override with empty string to omit (only safe if namePrefix is already globally unique).')
 param nameSuffix string = uniqueString(resourceGroup().id)
 
+@description('Tags applied to every taggable Azure resource. Sub-resources (queues, containers, role assignments, DNS records) are not tagged because the platform does not support it.')
+param tags object = {}
+
 var suffix = nameSuffix
 var sep    = empty(nameSuffix) ? '' : '-'
 var stWebRaw  = toLower('${namePrefix}stw${suffix}')
@@ -183,12 +186,14 @@ var bitlockerDeployContainer = 'app-package-bitlocker'
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: lawName
   location: location
+  tags:     tags
   properties: { sku: { name: 'PerGB2018' }, retentionInDays: 30 }
 }
 
 resource ai 'Microsoft.Insights/components@2020-02-02' = {
   name: aiName
   location: location
+  tags:     tags
   kind: 'web'
   properties: { Application_Type: 'web', WorkspaceResourceId: law.id }
 }
@@ -197,6 +202,7 @@ resource ai 'Microsoft.Insights/components@2020-02-02' = {
 resource storageWeb 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stWebName
   location: location
+  tags:     tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -217,6 +223,7 @@ resource storageWeb 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource storageProc 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stProcName
   location: location
+  tags:     tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -237,6 +244,7 @@ resource storageProc 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource storageWipe 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stWipeName
   location: location
+  tags:     tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -300,14 +308,17 @@ resource actionStatusTable 'Microsoft.Storage/storageAccounts/tableServices/tabl
 resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiName
   location: location
+  tags:     tags
 }
 resource uamiWeb 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiWebName
   location: location
+  tags:     tags
 }
 resource uamiWipe 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiWipeName
   location: location
+  tags:     tags
 }
 
 // ── Service Bus Standard namespace + 3 queues ────────────────────────────────
@@ -317,6 +328,7 @@ resource uamiWipe 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 resource sbNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
   name: sbNamespaceName
   location: location
+  tags:     tags
   sku: { name: 'Standard', tier: 'Standard' }
   properties: {
     minimumTlsVersion: '1.2'
@@ -404,6 +416,7 @@ resource sbQueueBitLockerAction 'Microsoft.ServiceBus/namespaces/queues@2022-10-
 resource planWeb 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planWebName
   location: location
+  tags:     tags
   sku: { name: 'EP1', tier: 'ElasticPremium' }
   kind: 'elastic'
   properties: { reserved: true, maximumElasticWorkerCount: 5 }
@@ -414,6 +427,7 @@ resource planWeb 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource planProc 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planProcName
   location: location
+  tags:     tags
   sku: { tier: 'FlexConsumption', name: 'FC1' }
   kind: 'functionapp'
   properties: { reserved: true }
@@ -421,6 +435,7 @@ resource planProc 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource planWipe 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planWipeName
   location: location
+  tags:     tags
   sku: { tier: 'FlexConsumption', name: 'FC1' }
   kind: 'functionapp'
   properties: { reserved: true }
@@ -436,6 +451,7 @@ resource planWipe 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
   name: webName
   location: location
+  tags:     tags
   kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'
@@ -536,6 +552,7 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
 resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
   name: procName
   location: location
+  tags:     tags
   kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'
@@ -644,6 +661,7 @@ resource funcProc 'Microsoft.Web/sites@2023-12-01' = {
 resource funcWipe 'Microsoft.Web/sites@2023-12-01' = {
   name: wipeName
   location: location
+  tags:     tags
   kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'
@@ -1005,6 +1023,7 @@ resource raAaTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (en
 resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' = {
   name: appConfigName
   location: location
+  tags:     tags
   sku: { name: 'standard' }
   properties: {
     disableLocalAuth: true
@@ -1077,6 +1096,7 @@ var natPipName         = toLower('${namePrefix}-natgw-pip${sep}${suffix}')
 resource nsgFlex 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   name: nsgFlexName
   location: location
+  tags:     tags
   properties: {
     securityRules: [
       // Explicitly allow outbound to Storage service tag (PE traffic stays on
@@ -1118,6 +1138,7 @@ resource nsgFlex 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
 resource nsgWeb 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   name: nsgWebName
   location: location
+  tags:     tags
   properties: {
     securityRules: [
       {
@@ -1159,6 +1180,7 @@ resource nsgWeb 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
 resource natPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: natPipName
   location: location
+  tags:     tags
   sku: { name: 'Standard' }
   zones: [ '1', '2', '3' ]
   properties: {
@@ -1174,6 +1196,7 @@ resource natPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
 resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
   name: natGatewayName
   location: location
+  tags:     tags
   sku: { name: 'Standard' }
   zones: [ '1' ]
   properties: {
@@ -1185,6 +1208,7 @@ resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
   location: location
+  tags:     tags
   properties: {
     addressSpace: { addressPrefixes: [ '10.20.0.0/24' ] }
     subnets: [
@@ -1271,18 +1295,22 @@ resource wipeFlexSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' e
 resource pdnsBlob 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.blob.${environment().suffixes.storage}'
   location: 'global'
+  tags:     tags
 }
 resource pdnsFile 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.file.${environment().suffixes.storage}'
   location: 'global'
+  tags:     tags
 }
 resource pdnsQueue 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.queue.${environment().suffixes.storage}'
   location: 'global'
+  tags:     tags
 }
 resource pdnsTable 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.table.${environment().suffixes.storage}'
   location: 'global'
+  tags:     tags
 }
 
 resource pdnsBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
@@ -1359,6 +1387,7 @@ resource peStorageProc 'Microsoft.Network/privateEndpoints@2024-01-01' = [for su
 resource peStorageWipeBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${stWipeName}-pe-blob'
   location: location
+  tags:     tags
   properties: {
     subnet: { id: peSubnet.id }
     privateLinkServiceConnections: [
@@ -1426,6 +1455,7 @@ resource peStorageWipeBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZone
 resource storageAutopilot 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stAplName
   location: location
+  tags:     tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -1453,6 +1483,7 @@ resource autopilotDeployBlobContainer 'Microsoft.Storage/storageAccounts/blobSer
 resource storageBitLocker 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stBlkName
   location: location
+  tags:     tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -1486,16 +1517,19 @@ resource bitlockerDeployBlobContainer 'Microsoft.Storage/storageAccounts/blobSer
 resource uamiAutopilot 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiAutopilotName
   location: location
+  tags:     tags
 }
 resource uamiBitLocker 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiBitLockerName
   location: location
+  tags:     tags
 }
 
 // ── FC1 Flex plans ───────────────────────────────────────────────────────────
 resource planAutopilot 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planAutopilotName
   location: location
+  tags:     tags
   sku: { tier: 'FlexConsumption', name: 'FC1' }
   kind: 'functionapp'
   properties: { reserved: true }
@@ -1503,6 +1537,7 @@ resource planAutopilot 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource planBitLocker 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planBitLockerName
   location: location
+  tags:     tags
   sku: { tier: 'FlexConsumption', name: 'FC1' }
   kind: 'functionapp'
   properties: { reserved: true }
@@ -1598,6 +1633,7 @@ resource raProcSbSendBitLocker 'Microsoft.Authorization/roleAssignments@2022-04-
 resource funcAutopilot 'Microsoft.Web/sites@2023-12-01' = {
   name: autopilotName
   location: location
+  tags:     tags
   kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'
@@ -1672,6 +1708,7 @@ resource funcAutopilot 'Microsoft.Web/sites@2023-12-01' = {
 resource funcBitLocker 'Microsoft.Web/sites@2023-12-01' = {
   name: bitlockerName
   location: location
+  tags:     tags
   kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'

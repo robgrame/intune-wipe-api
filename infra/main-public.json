@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "14346910114834706557"
+      "templateHash": "15926267800168996238"
     }
   },
   "parameters": {
@@ -262,6 +262,13 @@
       "metadata": {
         "description": "Disambiguation suffix appended to globally-unique resource names (Storage, App Configuration, Service Bus, Function App FQDN, etc.). Leave default for deterministic per-RG hash; override with empty string to omit (only safe if namePrefix is already globally unique)."
       }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags applied to every taggable Azure resource. Sub-resources (queues, containers, role assignments, DNS records) are not tagged because the platform does not support it."
+      }
     }
   },
   "variables": {
@@ -316,6 +323,7 @@
       "apiVersion": "2023-09-01",
       "name": "[variables('lawName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "properties": {
         "sku": {
           "name": "PerGB2018"
@@ -328,6 +336,7 @@
       "apiVersion": "2020-02-02",
       "name": "[variables('aiName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "web",
       "properties": {
         "Application_Type": "web",
@@ -342,6 +351,7 @@
       "apiVersion": "2023-05-01",
       "name": "[variables('stWebName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -374,6 +384,7 @@
       "apiVersion": "2023-05-01",
       "name": "[variables('stProcName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -406,6 +417,7 @@
       "apiVersion": "2023-05-01",
       "name": "[variables('stWipeName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -510,25 +522,29 @@
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiName')]",
-      "location": "[parameters('location')]"
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
     },
     {
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiWebName')]",
-      "location": "[parameters('location')]"
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
     },
     {
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiWipeName')]",
-      "location": "[parameters('location')]"
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
     },
     {
       "type": "Microsoft.ServiceBus/namespaces",
       "apiVersion": "2022-10-01-preview",
       "name": "[variables('sbNamespaceName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard",
         "tier": "Standard"
@@ -629,6 +645,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('planWebName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "EP1",
         "tier": "ElasticPremium"
@@ -644,6 +661,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('planProcName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "tier": "FlexConsumption",
         "name": "FC1"
@@ -658,6 +676,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('planWipeName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "tier": "FlexConsumption",
         "name": "FC1"
@@ -672,6 +691,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('webName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "UserAssigned",
@@ -876,6 +896,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('procName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "UserAssigned",
@@ -1063,6 +1084,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('wipeName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "UserAssigned",
@@ -1785,6 +1807,7 @@
       "apiVersion": "2024-05-01",
       "name": "[variables('appConfigName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "standard"
       },
@@ -1848,6 +1871,7 @@
       "apiVersion": "2023-05-01",
       "name": "[variables('stAplName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -1888,6 +1912,7 @@
       "apiVersion": "2023-05-01",
       "name": "[variables('stBlkName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -1927,19 +1952,22 @@
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiAutopilotName')]",
-      "location": "[parameters('location')]"
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
     },
     {
       "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
       "apiVersion": "2023-01-31",
       "name": "[variables('uamiBitLockerName')]",
-      "location": "[parameters('location')]"
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
     },
     {
       "type": "Microsoft.Web/serverfarms",
       "apiVersion": "2023-12-01",
       "name": "[variables('planAutopilotName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "tier": "FlexConsumption",
         "name": "FC1"
@@ -1954,6 +1982,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('planBitLockerName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "sku": {
         "tier": "FlexConsumption",
         "name": "FC1"
@@ -2208,6 +2237,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('autopilotName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "UserAssigned",
@@ -2360,6 +2390,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('bitlockerName')]",
       "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "UserAssigned",

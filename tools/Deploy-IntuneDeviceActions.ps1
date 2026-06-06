@@ -55,6 +55,17 @@
     tenants on globally-unique names — only safe if your namePrefix is itself
     sufficiently unique.
 
+.PARAMETER Tags
+    Hashtable of tags applied to every taggable Azure resource (Storage,
+    Function App, Service Bus, App Configuration, Key Vault, Managed Identity,
+    Log Analytics, App Insights, VNet, NSG, Private Endpoint, Private DNS
+    Zone, Automation Account). Sub-resources (queues, containers, role
+    assignments, DNS A records, Automation runbooks/variables) are skipped
+    because the platform doesn't support tags on them.
+
+    Example:
+      -Tags @{ env = 'prod'; owner = 'ITOps'; costCenter = 'CC123' }
+
 .PARAMETER SkipPrereqInstall
     Don't try to install missing prereqs - error out instead.
 
@@ -99,6 +110,10 @@ param(
     # names (Storage Account, App Configuration, Service Bus, FQDN, KV).
     [AllowNull()][AllowEmptyString()]
     [string]$NameSuffix      = $null,
+    # Hashtable of tags applied to every taggable Azure resource.
+    # Example: -Tags @{ env='prod'; owner='ITOps'; costCenter='CC123' }
+    # Forwarded to bicep as the 'tags' object parameter when non-empty.
+    [hashtable]$Tags         = @{},
     [string]$ParametersFile,
     [ValidateSet('hardened','public')]
     [string]$NetworkProfile = 'hardened',
@@ -375,6 +390,12 @@ function Invoke-InfraDeploy {
     if ($script:NameSuffixOverridden) {
         Write-Host "    nameSuffix override: '$NameSuffix'"
         $azArgs += @('-p', "nameSuffix=$NameSuffix")
+    }
+    if ($Tags -and $Tags.Count -gt 0) {
+        # Forward as JSON object literal: -p tags={"env":"prod","owner":"ITOps"}
+        $tagsJson = $Tags | ConvertTo-Json -Compress
+        Write-Host "    tags override: $tagsJson"
+        $azArgs += @('-p', "tags=$tagsJson")
     }
     $state = & az @azArgs
     if ($LASTEXITCODE -ne 0 -or $state -ne 'Succeeded') {
