@@ -134,7 +134,11 @@ param enableRunbookVariant bool = true
 param storageAllowedIpRanges array = []
 
 // ── Naming ───────────────────────────────────────────────────────────────────
-var suffix = uniqueString(resourceGroup().id)
+@description('Disambiguation suffix appended to globally-unique resource names (Storage, App Configuration, Service Bus, Function App FQDN, etc.). Leave default for deterministic per-RG hash; override with empty string to omit (only safe if namePrefix is already globally unique).')
+param nameSuffix string = uniqueString(resourceGroup().id)
+
+var suffix = nameSuffix
+var sep    = empty(nameSuffix) ? '' : '-'
 var stWebRaw  = toLower('${namePrefix}stw${suffix}')
 var stWebName = length(stWebRaw) > 24 ? substring(stWebRaw, 0, 24) : stWebRaw
 var stProcRaw  = toLower('${namePrefix}stp${suffix}')
@@ -146,28 +150,28 @@ var stAplName  = length(stAplRaw) > 24 ? substring(stAplRaw, 0, 24) : stAplRaw
 var stBlkRaw   = toLower('${namePrefix}stbl${suffix}')
 var stBlkName  = length(stBlkRaw) > 24 ? substring(stBlkRaw, 0, 24) : stBlkRaw
 
-var webName  = toLower('${namePrefix}-web-${suffix}')
-var procName = toLower('${namePrefix}-proc-${suffix}')
-var wipeName = toLower('${namePrefix}-wipe-${suffix}')
-var autopilotName = toLower('${namePrefix}-autopilot-${suffix}')
-var bitlockerName = toLower('${namePrefix}-bitlocker-${suffix}')
-var aiName   = toLower('${namePrefix}-ai-${suffix}')
-var lawName  = toLower('${namePrefix}-law-${suffix}')
+var webName  = toLower('${namePrefix}-web${sep}${suffix}')
+var procName = toLower('${namePrefix}-proc${sep}${suffix}')
+var wipeName = toLower('${namePrefix}-wipe${sep}${suffix}')
+var autopilotName = toLower('${namePrefix}-autopilot${sep}${suffix}')
+var bitlockerName = toLower('${namePrefix}-bitlocker${sep}${suffix}')
+var aiName   = toLower('${namePrefix}-ai${sep}${suffix}')
+var lawName  = toLower('${namePrefix}-law${sep}${suffix}')
 
-var uamiName     = toLower('${namePrefix}-uami-${suffix}')      // dispatcher (no Graph)
-var uamiWebName  = toLower('${namePrefix}-uami-web-${suffix}')   // public web (no Graph)
-var uamiWipeName = toLower('${namePrefix}-uami-wipe-${suffix}')  // privileged Graph
-var uamiAutopilotName = toLower('${namePrefix}-uami-autopilot-${suffix}')  // privileged Graph (Autopilot import)
-var uamiBitLockerName = toLower('${namePrefix}-uami-bitlocker-${suffix}')  // privileged Graph (BitLocker rotate)
+var uamiName     = toLower('${namePrefix}-uami${sep}${suffix}')      // dispatcher (no Graph)
+var uamiWebName  = toLower('${namePrefix}-uami-web${sep}${suffix}')   // public web (no Graph)
+var uamiWipeName = toLower('${namePrefix}-uami-wipe${sep}${suffix}')  // privileged Graph
+var uamiAutopilotName = toLower('${namePrefix}-uami-autopilot${sep}${suffix}')  // privileged Graph (Autopilot import)
+var uamiBitLockerName = toLower('${namePrefix}-uami-bitlocker${sep}${suffix}')  // privileged Graph (BitLocker rotate)
 
-var planWebName  = toLower('${namePrefix}-plan-web-${suffix}')   // EP1
-var planProcName = toLower('${namePrefix}-plan-proc-${suffix}')  // FC1
-var planWipeName = toLower('${namePrefix}-plan-wipe-${suffix}')  // FC1
-var planAutopilotName = toLower('${namePrefix}-plan-autopilot-${suffix}')  // FC1
-var planBitLockerName = toLower('${namePrefix}-plan-bitlocker-${suffix}')  // FC1
+var planWebName  = toLower('${namePrefix}-plan-web${sep}${suffix}')   // EP1
+var planProcName = toLower('${namePrefix}-plan-proc${sep}${suffix}')  // FC1
+var planWipeName = toLower('${namePrefix}-plan-wipe${sep}${suffix}')  // FC1
+var planAutopilotName = toLower('${namePrefix}-plan-autopilot${sep}${suffix}')  // FC1
+var planBitLockerName = toLower('${namePrefix}-plan-bitlocker${sep}${suffix}')  // FC1
 
-var sbNamespaceName = toLower('${namePrefix}-sb-${suffix}')
-var appConfigName   = toLower('${namePrefix}-appcfg-${suffix}')
+var sbNamespaceName = toLower('${namePrefix}-sb${sep}${suffix}')
+var appConfigName   = toLower('${namePrefix}-appcfg${sep}${suffix}')
 
 // Per-Flex-app deployment package containers (Flex Consumption requirement).
 var procDeployContainer = 'app-package-proc'
@@ -861,7 +865,7 @@ resource raWipeSbRecv 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // Optional: Azure Automation Account + PowerShell 7.2 runbook variant
 // (plug-in demo — same envelope, different runtime).
 // ─────────────────────────────────────────────────────────────────────────────
-var automationAccountName = toLower('${namePrefix}-aa-${suffix}')
+var automationAccountName = toLower('${namePrefix}-aa${sep}${suffix}')
 var runbookName           = 'Invoke-DeviceWipe'
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = if (enableRunbookVariant) {
@@ -1055,15 +1059,15 @@ resource raAppConfigWipe 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // privateEndpointNetworkPolicies=Disabled disables NSG enforcement on PE NICs.
 // 1 NAT Gateway + 1 Standard Public IP, attached to both flex subnets.
 // ─────────────────────────────────────────────────────────────────────────────
-var vnetName           = toLower('${namePrefix}-vnet-${suffix}')
+var vnetName           = toLower('${namePrefix}-vnet${sep}${suffix}')
 var peSubnetName       = 'pe-subnet'
 var webSubnetName      = 'web-subnet'
 var procFlexSubnetName = 'proc-flex-subnet'
 var wipeFlexSubnetName = 'wipe-flex-subnet'
-var nsgFlexName        = toLower('${namePrefix}-nsg-flex-${suffix}')
-var nsgWebName         = toLower('${namePrefix}-nsg-web-${suffix}')
-var natGatewayName     = toLower('${namePrefix}-natgw-${suffix}')
-var natPipName         = toLower('${namePrefix}-natgw-pip-${suffix}')
+var nsgFlexName        = toLower('${namePrefix}-nsg-flex${sep}${suffix}')
+var nsgWebName         = toLower('${namePrefix}-nsg-web${sep}${suffix}')
+var natGatewayName     = toLower('${namePrefix}-natgw${sep}${suffix}')
+var natPipName         = toLower('${namePrefix}-natgw-pip${sep}${suffix}')
 
 // NSGs need to exist BEFORE the subnets that reference them, and they must
 // be parented at the resource group (not the VNet). Azure default rules

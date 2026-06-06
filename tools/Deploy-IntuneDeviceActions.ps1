@@ -43,6 +43,18 @@
                             the public Internet, still RBAC-protected). Use
                             for low-cost / quick-start deployments.
 
+.PARAMETER NameSuffix
+    Overrides the disambiguation suffix appended to globally-unique resource
+    names (Storage Account, App Configuration, Service Bus namespace, Function
+    App FQDN, Key Vault). When not specified the bicep default applies:
+    uniqueString(resourceGroup().id) — a 13-char deterministic hash per RG.
+
+    Pass an empty string '' to omit the suffix entirely (cleanest names like
+    'idactions-web', 'idactionsstw'). Pass a short label ('prod', 'lab') to
+    customize. WARNING: empty or generic suffixes risk collision with other
+    tenants on globally-unique names — only safe if your namePrefix is itself
+    sufficiently unique.
+
 .PARAMETER SkipPrereqInstall
     Don't try to install missing prereqs - error out instead.
 
@@ -79,6 +91,14 @@ param(
     [string]$Location        = 'westeurope',
     [string]$SubscriptionId,
     [string]$NamePrefix      = 'idactions',
+    # Override the disambiguation suffix on globally-unique resource names.
+    # $null (default) -> let bicep use uniqueString(resourceGroup().id).
+    # ''               -> omit the suffix entirely (names like idactions-web).
+    # 'prod' / 'lab'   -> custom short suffix.
+    # WARNING: empty or short suffixes risk collision on globally-unique
+    # names (Storage Account, App Configuration, Service Bus, FQDN, KV).
+    [AllowNull()][AllowEmptyString()]
+    [string]$NameSuffix      = $null,
     [string]$ParametersFile,
     [ValidateSet('hardened','public')]
     [string]$NetworkProfile = 'hardened',
@@ -92,6 +112,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+
+# Capture NameSuffix override decision at script scope (function scopes
+# don't see the script-level $PSBoundParameters).
+$script:NameSuffixOverridden = $PSBoundParameters.ContainsKey('NameSuffix')
 
 # -- Paths -------------------------------------------------------------------
 $RepoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -340,11 +364,19 @@ function Invoke-InfraDeploy {
     & az group create -n $ResourceGroup -l $Location --only-show-errors -o none
     $deployName = "$NamePrefix-deploy-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
     Write-Host "    deployment name: $deployName"
-    $state = & az deployment group create `
-        -g $ResourceGroup -n $deployName `
-        -f $BicepFile -p "@$ParametersFile" `
-        --query 'properties.provisioningState' -o tsv `
-        --only-show-errors
+    $azArgs = @(
+        'deployment','group','create',
+        '-g', $ResourceGroup, '-n', $deployName,
+        '-f', $BicepFile, '-p', "@$ParametersFile",
+        '--query', 'properties.provisioningState', '-o', 'tsv',
+        '--only-show-errors'
+    )
+    # Bound (incl. empty string) -> forward to bicep as named param override.
+    if ($script:NameSuffixOverridden) {
+        Write-Host "    nameSuffix override: '$NameSuffix'"
+        $azArgs += @('-p', "nameSuffix=$NameSuffix")
+    }
+    $state = & az @azArgs
     if ($LASTEXITCODE -ne 0 -or $state -ne 'Succeeded') {
         throw "Bicep deployment failed (state: $state). Run: az deployment group show -g $ResourceGroup -n $deployName"
     }
@@ -353,8 +385,12 @@ function Invoke-InfraDeploy {
 
 # -- Function-app lookup ---------------------------------------------------
 function Get-FunctionAppByRole($role) {
+    # Match both '<prefix>-<role>' (no suffix) and '<prefix>-<role>-<anything>' (suffix).
+    # Using `starts_with` + an explicit '==' fallback covers both shapes.
+    $needleDash = "$NamePrefix-$role-"
+    $needleBare = "$NamePrefix-$role"
     $name = & az functionapp list -g $ResourceGroup `
-        --query "[?starts_with(name, '$NamePrefix-$role-')].name | [0]" `
+        --query "[?starts_with(name, '$needleDash') || name == '$needleBare'].name | [0]" `
         -o tsv --only-show-errors
     if (-not $name) { return $null }
     return $name.Trim()
@@ -425,7 +461,7 @@ function Invoke-SmokeTest {
 # -- Runbook content publish (optional, when enableRunbookVariant=true) ------
 function Invoke-RunbookPublish {
     $aaName = (& az automation account list -g $ResourceGroup `
-        --query "[?starts_with(name, '$NamePrefix-aa-')].name | [0]" `
+        --query "[?starts_with(name, '$NamePrefix-aa-') || name == '$NamePrefix-aa'].name | [0]" `
         -o tsv --only-show-errors)
     if (-not $aaName) {
         Write-Warn2 "No Automation Account in $ResourceGroup; skipping runbook publish (enableRunbookVariant=false)."

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "16924337121427146163"
+      "templateHash": "17936985208080176511"
     }
   },
   "parameters": {
@@ -255,10 +255,18 @@
       "metadata": {
         "description": "IPv4 addresses or CIDR ranges of operators / build agents allowed to reach the storage data plane through the public endpoint (e.g. local dev box, GitHub Actions). Empty disables the IP allow-list (only AzureServices bypass remains)."
       }
+    },
+    "nameSuffix": {
+      "type": "string",
+      "defaultValue": "[uniqueString(resourceGroup().id)]",
+      "metadata": {
+        "description": "Disambiguation suffix appended to globally-unique resource names (Storage, App Configuration, Service Bus, Function App FQDN, etc.). Leave default for deterministic per-RG hash; override with empty string to omit (only safe if namePrefix is already globally unique)."
+      }
     }
   },
   "variables": {
-    "suffix": "[uniqueString(resourceGroup().id)]",
+    "suffix": "[parameters('nameSuffix')]",
+    "sep": "[if(empty(parameters('nameSuffix')), '', '-')]",
     "stWebRaw": "[toLower(format('{0}stw{1}', parameters('namePrefix'), variables('suffix')))]",
     "stWebName": "[if(greater(length(variables('stWebRaw')), 24), substring(variables('stWebRaw'), 0, 24), variables('stWebRaw'))]",
     "stProcRaw": "[toLower(format('{0}stp{1}', parameters('namePrefix'), variables('suffix')))]",
@@ -269,25 +277,25 @@
     "stAplName": "[if(greater(length(variables('stAplRaw')), 24), substring(variables('stAplRaw'), 0, 24), variables('stAplRaw'))]",
     "stBlkRaw": "[toLower(format('{0}stbl{1}', parameters('namePrefix'), variables('suffix')))]",
     "stBlkName": "[if(greater(length(variables('stBlkRaw')), 24), substring(variables('stBlkRaw'), 0, 24), variables('stBlkRaw'))]",
-    "webName": "[toLower(format('{0}-web-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "procName": "[toLower(format('{0}-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "wipeName": "[toLower(format('{0}-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "autopilotName": "[toLower(format('{0}-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "bitlockerName": "[toLower(format('{0}-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "aiName": "[toLower(format('{0}-ai-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "lawName": "[toLower(format('{0}-law-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "uamiName": "[toLower(format('{0}-uami-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "uamiWebName": "[toLower(format('{0}-uami-web-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "uamiWipeName": "[toLower(format('{0}-uami-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "uamiAutopilotName": "[toLower(format('{0}-uami-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "uamiBitLockerName": "[toLower(format('{0}-uami-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "planWebName": "[toLower(format('{0}-plan-web-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "planProcName": "[toLower(format('{0}-plan-proc-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "planWipeName": "[toLower(format('{0}-plan-wipe-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "planAutopilotName": "[toLower(format('{0}-plan-autopilot-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "planBitLockerName": "[toLower(format('{0}-plan-bitlocker-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "sbNamespaceName": "[toLower(format('{0}-sb-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "appConfigName": "[toLower(format('{0}-appcfg-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "webName": "[toLower(format('{0}-web{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "procName": "[toLower(format('{0}-proc{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "wipeName": "[toLower(format('{0}-wipe{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "autopilotName": "[toLower(format('{0}-autopilot{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "bitlockerName": "[toLower(format('{0}-bitlocker{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "aiName": "[toLower(format('{0}-ai{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "lawName": "[toLower(format('{0}-law{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "uamiName": "[toLower(format('{0}-uami{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "uamiWebName": "[toLower(format('{0}-uami-web{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "uamiWipeName": "[toLower(format('{0}-uami-wipe{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "uamiAutopilotName": "[toLower(format('{0}-uami-autopilot{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "uamiBitLockerName": "[toLower(format('{0}-uami-bitlocker{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "planWebName": "[toLower(format('{0}-plan-web{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "planProcName": "[toLower(format('{0}-plan-proc{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "planWipeName": "[toLower(format('{0}-plan-wipe{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "planAutopilotName": "[toLower(format('{0}-plan-autopilot{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "planBitLockerName": "[toLower(format('{0}-plan-bitlocker{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "sbNamespaceName": "[toLower(format('{0}-sb{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "appConfigName": "[toLower(format('{0}-appcfg{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
     "procDeployContainer": "app-package-proc",
     "wipeDeployContainer": "app-package-wipe",
     "autopilotDeployContainer": "app-package-autopilot",
@@ -298,18 +306,18 @@
     "tableDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
     "sbDataSender": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')]",
     "sbDataReceiver": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')]",
-    "automationAccountName": "[toLower(format('{0}-aa-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "automationAccountName": "[toLower(format('{0}-aa{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
     "runbookName": "Invoke-DeviceWipe",
     "appConfigDataReader": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '516239f1-63e1-4d78-a4de-a74fb236a071')]",
-    "vnetName": "[toLower(format('{0}-vnet-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "vnetName": "[toLower(format('{0}-vnet{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
     "peSubnetName": "pe-subnet",
     "webSubnetName": "web-subnet",
     "procFlexSubnetName": "proc-flex-subnet",
     "wipeFlexSubnetName": "wipe-flex-subnet",
-    "nsgFlexName": "[toLower(format('{0}-nsg-flex-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "nsgWebName": "[toLower(format('{0}-nsg-web-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "natGatewayName": "[toLower(format('{0}-natgw-{1}', parameters('namePrefix'), variables('suffix')))]",
-    "natPipName": "[toLower(format('{0}-natgw-pip-{1}', parameters('namePrefix'), variables('suffix')))]",
+    "nsgFlexName": "[toLower(format('{0}-nsg-flex{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "nsgWebName": "[toLower(format('{0}-nsg-web{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "natGatewayName": "[toLower(format('{0}-natgw{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
+    "natPipName": "[toLower(format('{0}-natgw-pip{1}{2}', parameters('namePrefix'), variables('sep'), variables('suffix')))]",
     "webPeSubresources": [
       "blob",
       "file",
