@@ -128,9 +128,13 @@ public sealed class GraphBitLockerService
         requestInfo.Headers.Add("Accept", "application/json");
 
         // Map any 4xx/5xx into a typed ODataError so the shared classifier can
-        // tell transient from permanent (the runner relies on this).
+        // tell transient from permanent (the runner relies on this). "XXX" is the
+        // Kiota catch-all; 4XX/5XX are listed explicitly so the mapping is robust
+        // regardless of Kiota's wildcard-resolution order across versions.
         var errorMapping = new Dictionary<string, ParsableFactory<IParsable>>
         {
+            { "4XX", ODataError.CreateFromDiscriminatorValue },
+            { "5XX", ODataError.CreateFromDiscriminatorValue },
             { "XXX", ODataError.CreateFromDiscriminatorValue },
         };
 
