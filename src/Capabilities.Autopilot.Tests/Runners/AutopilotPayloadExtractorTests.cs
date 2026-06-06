@@ -79,13 +79,11 @@ public sealed class AutopilotPayloadExtractorTests
     }
 
     [Fact]
-    public void Returns_payload_with_null_hardware_hash_when_value_is_wrong_type()
+    public void Returns_payload_with_null_hardware_hash_when_value_is_json_null()
     {
-        // The Web JSON serializer used by System.Text.Json silently binds a
-        // numeric JSON value to a string property as null (web defaults) —
-        // bind the value rather than throw. The runner subsequently sees
-        // HardwareHash=null and treats it as a missing-hash denial. We assert
-        // that this binding is non-throwing.
+        // JSON null on a string property binds to .NET null — the extractor
+        // returns the payload with HardwareHash=null and the runner converts
+        // it to a missing-hash permanent denial.
         var msg = NewMessage("""{"correlationId":"c","deviceName":"d","entraDeviceId":"e","intuneDeviceId":"i","autopilot":{"hardwareHash":null,"serialNumber":"S"}}""");
 
         var p = AutopilotPayloadExtractor.TryRead(msg);
@@ -93,5 +91,32 @@ public sealed class AutopilotPayloadExtractorTests
         p.Should().NotBeNull();
         p!.HardwareHash.Should().BeNull();
         p.SerialNumber.Should().Be("S");
+    }
+
+    [Fact]
+    public void Returns_null_when_hardwareHash_has_wrong_json_type()
+    {
+        // Number where a string is expected: System.Text.Json throws on the
+        // declared property; the extractor swallows the JsonException and
+        // returns null → runner treats as permanent denial.
+        var msg = NewMessage("""{"correlationId":"c","deviceName":"d","entraDeviceId":"e","intuneDeviceId":"i","autopilot":{"hardwareHash":123}}""");
+
+        AutopilotPayloadExtractor.TryRead(msg).Should().BeNull();
+    }
+
+    [Fact]
+    public void Returns_null_when_autopilot_value_is_a_string()
+    {
+        var msg = NewMessage("""{"correlationId":"c","deviceName":"d","entraDeviceId":"e","intuneDeviceId":"i","autopilot":"bad"}""");
+
+        AutopilotPayloadExtractor.TryRead(msg).Should().BeNull();
+    }
+
+    [Fact]
+    public void Returns_null_when_autopilot_value_is_an_array()
+    {
+        var msg = NewMessage("""{"correlationId":"c","deviceName":"d","entraDeviceId":"e","intuneDeviceId":"i","autopilot":[]}""");
+
+        AutopilotPayloadExtractor.TryRead(msg).Should().BeNull();
     }
 }

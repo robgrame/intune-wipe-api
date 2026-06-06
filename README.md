@@ -108,16 +108,20 @@ Esempio: una capability `lock`.
    ├── Runners/LockActionRunner.cs       # host privilegiato: chiama Graph (Type = "lock")
    ├── Runners/LockPayloadExtractor.cs   # internal helper Extras → LockPayload
    ├── Services/GraphLockService.cs
-   └── ServiceCollectionExtensions.cs    # AddLockForwarding() / AddLockExecutor() / AddLockProbe()
+   └── LockHostBuilderExtensions.cs    # AddLockForwarding() / AddLockExecutor() / AddLockProbe()
    ```
-   Il runner implementa `IActionRunner`:
+   Il runner implementa `IActionRunner` e deserializza la busta come
+   `ActionRequestMessage` per accedere a `Extras` (l'extractor lavora sul
+   messaggio, non sull'envelope):
    ```csharp
    public sealed class LockActionRunner : IActionRunner
    {
        public string Type => "lock";
        public async Task RunAsync(ActionDispatchMessage env, CancellationToken ct)
        {
-           var payload = LockPayloadExtractor.TryRead(env);
+           var msg = env.Payload.Deserialize<ActionRequestMessage>()
+               ?? throw new InvalidOperationException("Lock payload missing/invalid in dispatch envelope.");
+           var payload = LockPayloadExtractor.TryRead(msg);
            // ... logica + audit + idempotency
        }
    }
@@ -129,10 +133,12 @@ Esempio: una capability `lock`.
      crea un nuovo host `src/Lock/` che chiama `services.AddLockExecutor();`
      e la sua function `LockAction` (Service Bus trigger su `lock-action`)
      risolve `LockActionRunner` come tipo concreto.
-3. Producer: i client esistenti chiamano già `POST /api/ActionRequest` con
+3. Producer: i client esistenti chiamano già `POST /api/actions` con
    `actionType: "lock"` e le proprietà capability-specifiche nel corpo —
    l'`[JsonExtensionData] Extras` di `ActionRequest` le cattura senza modifiche
-   a `Web` né a `Shared`.
+   a `Web` né a `Shared`. (Le chiavi che collidono con campi server-stamped
+   come `forceRearm` / `correlationId` vengono scartate da
+   `ActionRequestMessage.SanitizeExtras` per impedire spoofing.)
 4. Per esporre il nuovo tipo ai client, aggiungi `lock` alla CSV
    `Actions:AllowedTypes` (App Configuration, hot-reload): **modifica di
    configurazione, non di codice**.

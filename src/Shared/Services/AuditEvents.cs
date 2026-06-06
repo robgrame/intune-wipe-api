@@ -28,6 +28,7 @@ public static class AuditEvents
     public const string DeniedCertDeviceMismatch     = "action.denied.cert-device-mismatch";
     public const string DeniedPayloadInvalid         = "action.denied.payload-invalid";
     public const string DeniedActionTypeNotAllowed   = "action.denied.type-not-allowed";
+    public const string ExtrasReservedKeyStripped    = "action.request.extras-reserved-key-stripped";
 
     // ---- Proc (queue path, generic preflight / dispatch) ------------------
     public const string DeniedDeviceResolveFailed        = "action.denied.device-resolve-failed";

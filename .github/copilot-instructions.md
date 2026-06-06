@@ -15,8 +15,23 @@ bitlocker, …).
 any core component.** "Core" here means the Shared project, the Web project,
 the Proc dispatcher/router functions, and the existing capability projects.
 Only the per-role composition root (`Proc/Program.cs`, and the new capability
-host's own `Program.cs`) and the additive infra in `infra/main.bicep` are
-expected to grow.
+host's own `Program.cs`) plus the **composition-root wiring** required to
+include the new capability assembly in the build/run graph are expected to
+grow. Specifically, the following changes are *explicitly allowed* and do not
+violate the rule:
+
+- `Proc/IntuneDeviceActions.Proc.csproj` (and any new capability host
+  `.csproj`): add a `<ProjectReference>` to the new
+  `Capabilities.<Name>.csproj`.
+- `src/IntuneDeviceActions.slnx`: add the new capability project + its
+  `.Tests` sibling to the solution.
+- `tools/Deploy-IntuneDeviceActions.ps1` and other deployment manifests:
+  register the new host if one is added.
+- `infra/main.bicep`: add the additive module for capability-specific Azure
+  resources (queue, dedicated Function App, role assignments).
+
+These are wiring, not core logic — the Shared contracts and the Web/Proc
+function code remain untouched.
 
 This rule applies whether or not the capability carries a payload of its own
 on the wire — we have already paid the design cost to make payloads opaque to

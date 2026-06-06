@@ -244,6 +244,7 @@ public sealed class ActionRequestFunction
         var allowForceRearm = bool.TryParse(_cfg["Idempotency:AllowForceRearm"], out var afr) && afr;
         var forceRearm      = headerSaysForce && allowForceRearm;
 
+        var droppedExtras = new List<string>();
         var msg = new ActionRequestMessage
         {
             ActionType = actionType,
@@ -257,9 +258,25 @@ public sealed class ActionRequestFunction
             // Opaque pass-through: forward any extra top-level JSON properties
             // (e.g. "autopilot" for autopilot-register) to the downstream
             // capability runner without the Shared core knowing their shape.
-            // Empty/null for actions that don't need per-capability payload.
-            Extras = body.Extras,
+            // SanitizeExtras strips any client-supplied key that collides with
+            // a server-stamped field (forceRearm, correlationId, requestedAt,
+            // clientCertThumbprint, ...) — otherwise the duplicate would win
+            // on the consumer side (System.Text.Json last-value semantics)
+            // and let the client spoof trusted fields.
+            Extras = ActionRequestMessage.SanitizeExtras(body.Extras, droppedExtras),
         };
+
+        if (droppedExtras.Count > 0)
+        {
+            _audit.TrackEvent(AuditEvents.ExtrasReservedKeyStripped, new Dictionary<string, string>
+            {
+                [AuditEvents.Prop.CorrelationId] = correlationId,
+                [AuditEvents.Prop.ActionType]    = actionType ?? "",
+                ["DroppedKeys"]                  = string.Join(",", droppedExtras),
+            }, LogLevel.Warning);
+            _log.LogWarning("Stripped reserved keys from client extras: corr={Corr} keys={Keys}",
+                correlationId, string.Join(",", droppedExtras));
+        }
 
         var payload = JsonSerializer.Serialize(msg);
         var sbMessage = new ServiceBusMessage(payload)

@@ -44,9 +44,67 @@ public sealed class ActionRequestMessage
     /// per-capability payloads end-to-end (e.g. <c>autopilot</c> for the
     /// autopilot-register action) without leaking capability-specific types
     /// into the Shared core. Populated by <c>ActionRequestFunction</c> from the
-    /// HTTP body's extras and forwarded through the dispatch envelope until the
-    /// matching <c>IActionRunner</c> reads its own named property.
+    /// HTTP body's extras (after passing through <see cref="SanitizeExtras"/>
+    /// to scrub any server-stamped key) and forwarded through the dispatch
+    /// envelope until the matching <c>IActionRunner</c> reads its own named
+    /// property.
     /// </summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extras { get; set; }
+
+    /// <summary>
+    /// Names of the declared JSON properties on this type. Used by
+    /// <see cref="SanitizeExtras"/> to scrub any colliding key out of the
+    /// extension-data bag at the trust boundary. The set is case-insensitive
+    /// because some consumers configure <c>PropertyNameCaseInsensitive=true</c>
+    /// and we don't want a case-flipped key (e.g. <c>ForceRearm</c>) to
+    /// survive sanitisation and then bind on the consumer side.
+    /// </summary>
+    public static readonly IReadOnlySet<string> ReservedExtrasKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "actionType",
+            "deviceName",
+            "entraDeviceId",
+            "intuneDeviceId",
+            "correlationId",
+            "clientCertThumbprint",
+            "requestedAt",
+            "forceRearm",
+        };
+
+    /// <summary>
+    /// Returns a copy of <paramref name="source"/> with any key matching a
+    /// declared <see cref="ActionRequestMessage"/> property removed. Used at
+    /// the HTTP boundary to prevent an authenticated client from spoofing
+    /// server-stamped fields (e.g. <c>forceRearm</c>, <c>correlationId</c>,
+    /// <c>clientCertThumbprint</c>) through the opaque
+    /// <see cref="ActionRequest.Extras"/> bag. Returns <c>null</c> if
+    /// <paramref name="source"/> is <c>null</c> or every key was reserved.
+    /// </summary>
+    /// <param name="source">Raw extras dictionary from the HTTP request body.</param>
+    /// <param name="droppedKeys">
+    /// When non-null, populated with the names of reserved keys that were
+    /// stripped. Empty when no collisions were found. Useful for audit /
+    /// forensic logging at the call site.
+    /// </param>
+    public static Dictionary<string, JsonElement>? SanitizeExtras(
+        Dictionary<string, JsonElement>? source,
+        IList<string>? droppedKeys = null)
+    {
+        if (source is null || source.Count == 0) return null;
+
+        Dictionary<string, JsonElement>? clean = null;
+        foreach (var kv in source)
+        {
+            if (ReservedExtrasKeys.Contains(kv.Key))
+            {
+                droppedKeys?.Add(kv.Key);
+                continue;
+            }
+            clean ??= new Dictionary<string, JsonElement>(source.Count, StringComparer.Ordinal);
+            clean[kv.Key] = kv.Value;
+        }
+        return clean;
+    }
 }
