@@ -1,16 +1,24 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace IntuneDeviceActions.Models;
 
+/// <summary>
+/// Service Bus message produced by the HTTP intake and consumed by the
+/// dispatcher. Mirrors <see cref="ActionRequest"/> on the wire and shares the
+/// same action-agnostic contract: the Shared core stamps only the routing and
+/// audit fields; per-capability payloads travel opaquely in <see cref="Extras"/>
+/// and are deserialized by the matching <c>IActionRunner</c>.
+/// </summary>
 public sealed class ActionRequestMessage
 {
     /// <summary>
     /// Pluggable action discriminator (matches an <c>IActionRunner.Type</c>
-    /// downstream). Stamped by <c>ActionRequestFunction</c> from the HTTP route
-    /// template and propagated end-to-end so the intake/dispatch pipeline can
-    /// route any registered action without code changes. Nullable to stay
-    /// compatible with in-flight messages produced before this field existed:
-    /// consumers fall back to a configured default when missing.
+    /// downstream). Stamped by <c>ActionRequestFunction</c> from the HTTP body
+    /// and propagated end-to-end so the intake/dispatch pipeline can route any
+    /// registered action without code changes. Nullable to stay compatible with
+    /// in-flight messages produced before this field existed: consumers fall
+    /// back to a configured default when missing.
     /// </summary>
     [JsonPropertyName("actionType")]       public string? ActionType { get; set; }
     [JsonPropertyName("deviceName")]       public string DeviceName { get; set; } = string.Empty;
@@ -31,12 +39,14 @@ public sealed class ActionRequestMessage
     [JsonPropertyName("forceRearm")]       public bool ForceRearm { get; set; }
 
     /// <summary>
-    /// Optional Autopilot device-identity bundle (hardware hash + serial +
-    /// product key + group tag) carried end-to-end for the
-    /// <c>autopilot-register</c> action. Null for every other action. Stamped by
-    /// <c>ActionRequestFunction</c> from the HTTP body's <c>autopilot</c> object
-    /// and forwarded opaquely inside the dispatch envelope until
-    /// <c>AutopilotRegisterRunner</c> consumes it.
+    /// Opaque bag of any additional JSON properties carried alongside the
+    /// routing fields. Mirrors <see cref="ActionRequest.Extras"/> and carries
+    /// per-capability payloads end-to-end (e.g. <c>autopilot</c> for the
+    /// autopilot-register action) without leaking capability-specific types
+    /// into the Shared core. Populated by <c>ActionRequestFunction</c> from the
+    /// HTTP body's extras and forwarded through the dispatch envelope until the
+    /// matching <c>IActionRunner</c> reads its own named property.
     /// </summary>
-    [JsonPropertyName("autopilot")]        public AutopilotIdentityPayload? Autopilot { get; set; }
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extras { get; set; }
 }

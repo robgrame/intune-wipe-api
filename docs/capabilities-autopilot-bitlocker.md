@@ -24,7 +24,9 @@ lato server** — va raccolto sul device, esattamente come l'identità nel wipe.
 
 - **Client:** `client/Invoke-AutopilotRegister.ps1` + `client/AutopilotIdentity.psm1`
   raccolgono hardware hash, serial number e product key e li inviano nel
-  campo `autopilot` del payload (`AutopilotIdentityPayload`), riusando il
+  campo `autopilot` del payload (deserializzato lato server in
+  `IntuneDeviceActions.Capabilities.Autopilot.Models.AutopilotIdentityPayload`
+  tramite la bag opaca `ActionRequest.Extras` di Shared), riusando il
   client cert mTLS. Nessun dialog "digita WIPE": esecuzione silente in
   SYSTEM context.
 - **Server:** `AutopilotRegisterRunner` (`Type = "autopilot-register"`) esegue

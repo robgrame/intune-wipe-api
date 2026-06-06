@@ -1,3 +1,4 @@
+using IntuneDeviceActions.Capabilities.Autopilot.Models;
 using IntuneDeviceActions.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;

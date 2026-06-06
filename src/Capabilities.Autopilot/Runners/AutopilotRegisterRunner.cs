@@ -1,6 +1,7 @@
 using System.Text.Json;
 using IntuneDeviceActions.Actions;
 using IntuneDeviceActions.Capabilities.Autopilot.Audit;
+using IntuneDeviceActions.Capabilities.Autopilot.Models;
 using IntuneDeviceActions.Capabilities.Autopilot.Services;
 using IntuneDeviceActions.Models;
 using IntuneDeviceActions.Services;
@@ -73,7 +74,10 @@ public sealed class AutopilotRegisterRunner : IActionRunner
 
         // 0) Payload validation — the hardware hash is collected on the client and
         //    is mandatory for the Graph import. Missing hash is a permanent denial.
-        if (msg.Autopilot is null || string.IsNullOrWhiteSpace(msg.Autopilot.HardwareHash))
+        //    The autopilot payload travels opaquely in the action-agnostic Extras
+        //    bag; we pull it out by its capability-owned key here.
+        var autopilot = TryReadAutopilotPayload(msg);
+        if (autopilot is null || string.IsNullOrWhiteSpace(autopilot.HardwareHash))
         {
             _audit.TrackEvent(AutopilotAuditEvents.DeniedMissingHardwareHash, new Dictionary<string, string>
             {
@@ -224,7 +228,7 @@ public sealed class AutopilotRegisterRunner : IActionRunner
         // 4) Execute the Autopilot import
         try
         {
-            var import = await _graph.ImportAsync(msg.Autopilot, ct);
+            var import = await _graph.ImportAsync(autopilot, ct);
             await _ledger.MarkIssuedAsync(msg.IntuneDeviceId, msg.CorrelationId, ct);
             _audit.TrackEvent(AutopilotAuditEvents.ImportIssued, new Dictionary<string, string>
             {
@@ -262,6 +266,29 @@ public sealed class AutopilotRegisterRunner : IActionRunner
                 [AuditEvents.Prop.IntuneDeviceId] = msg.IntuneDeviceId,
             }, LogLevel.Warning);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Pulls the capability-owned <c>autopilot</c> JSON element out of the
+    /// action-agnostic <see cref="ActionRequestMessage.Extras"/> bag and
+    /// deserializes it into <see cref="AutopilotIdentityPayload"/>. Returns
+    /// <c>null</c> when the key is absent, JSON-null, or fails to bind — the
+    /// caller treats all three as "missing hardware hash" (a permanent denial).
+    /// Keeps the Shared core agnostic of this capability's payload shape.
+    /// </summary>
+    private static AutopilotIdentityPayload? TryReadAutopilotPayload(ActionRequestMessage msg)
+    {
+        if (msg.Extras is null) return null;
+        if (!msg.Extras.TryGetValue(AutopilotIdentityPayload.ExtrasKey, out var element)) return null;
+        if (element.ValueKind == JsonValueKind.Null || element.ValueKind == JsonValueKind.Undefined) return null;
+        try
+        {
+            return element.Deserialize<AutopilotIdentityPayload>();
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 }

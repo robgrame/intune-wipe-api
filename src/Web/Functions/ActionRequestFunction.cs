@@ -254,9 +254,11 @@ public sealed class ActionRequestFunction
             ClientCertThumbprint = cert?.Thumbprint,
             RequestedAt = DateTimeOffset.UtcNow,
             ForceRearm = forceRearm,
-            // Opaque pass-through: only populated for autopilot-register requests;
-            // null for every other action so the wire format is unchanged.
-            Autopilot = body.Autopilot,
+            // Opaque pass-through: forward any extra top-level JSON properties
+            // (e.g. "autopilot" for autopilot-register) to the downstream
+            // capability runner without the Shared core knowing their shape.
+            // Empty/null for actions that don't need per-capability payload.
+            Extras = body.Extras,
         };
 
         var payload = JsonSerializer.Serialize(msg);
