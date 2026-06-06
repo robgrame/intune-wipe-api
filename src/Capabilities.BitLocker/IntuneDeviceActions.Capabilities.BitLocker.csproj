@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>IntuneDeviceActions.Capabilities.BitLocker</RootNamespace>
+    <AssemblyName>IntuneDeviceActions.Capabilities.BitLocker</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\IntuneDeviceActions.Shared.csproj" />
+  </ItemGroup>
+  <!--
+    NB: Microsoft.Graph, Azure.Identity, Service Bus, AppInsights packages are
+    inherited transitively from Shared.csproj — keep this csproj minimal so
+    the capability isolation is visible at build time (mirrors Capabilities.Wipe).
+  -->
+</Project>

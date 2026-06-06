@@ -29,4 +29,14 @@ public sealed class ActionRequestMessage
     /// <c>X-Force-Rearm: true</c> request header at the HTTP boundary.
     /// </summary>
     [JsonPropertyName("forceRearm")]       public bool ForceRearm { get; set; }
+
+    /// <summary>
+    /// Optional Autopilot device-identity bundle (hardware hash + serial +
+    /// product key + group tag) carried end-to-end for the
+    /// <c>autopilot-register</c> action. Null for every other action. Stamped by
+    /// <c>ActionRequestFunction</c> from the HTTP body's <c>autopilot</c> object
+    /// and forwarded opaquely inside the dispatch envelope until
+    /// <c>AutopilotRegisterRunner</c> consumes it.
+    /// </summary>
+    [JsonPropertyName("autopilot")]        public AutopilotIdentityPayload? Autopilot { get; set; }
 }

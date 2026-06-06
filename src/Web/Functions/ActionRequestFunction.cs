@@ -254,6 +254,9 @@ public sealed class ActionRequestFunction
             ClientCertThumbprint = cert?.Thumbprint,
             RequestedAt = DateTimeOffset.UtcNow,
             ForceRearm = forceRearm,
+            // Opaque pass-through: only populated for autopilot-register requests;
+            // null for every other action so the wire format is unchanged.
+            Autopilot = body.Autopilot,
         };
 
         var payload = JsonSerializer.Serialize(msg);
