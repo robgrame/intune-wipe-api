@@ -449,39 +449,46 @@ capability.
 
 ---
 
-## Variante: capability REST-only (non-Graph)
+## Variante: capability LOOKUP + Graph (con CMDB cliente)
 
-Se la capability non chiama Microsoft Graph ma un endpoint **HTTP del
-cliente** (es. la capability `device-rename` esistente), il modello
-cambia in pochi punti:
+Se la capability deve **applicare un'azione Intune** ma il dato necessario
+all'azione vive in un sistema cliente (es. **device-rename**: il nome
+canonico vive nella CMDB del cliente, l'azione viene applicata via Intune
+Graph), il pattern è ibrido:
 
-| Componente | Capability Graph | Capability REST-only |
+| Step | Componente | Cosa fa |
 |---|---|---|
-| Client downstream | `GraphServiceClient` (`AddGraphClient()`) | `HttpClient` tipizzato (`AddHttpClient<I…, Http…>()`) |
-| UAMI app-role grant Graph | Necessario (`Grant-GraphPermissions.ps1`) | **Non necessario** |
-| Pre-checks (device-resolve / group / ownership) | Tipicamente tutti | Spesso omessi (li enforce il sistema cliente) |
-| Event naming | `{prefix}.graph.{verb}.{outcome}` | `{prefix}.rest.{verb}.{outcome}` |
-| Config richiesta | `Graph__ManagedIdentityClientId` | `<Capability>:Endpoint`, `<Capability>:AuthHeaderName`, `<Capability>:AuthHeaderValue` (KV ref consigliata) |
-| Status probe poller | Quasi sempre presente | Tipicamente omesso (terminale settato sincronicamente dal runner) |
+| 1 | `ICustomerXxxClient` (typed HttpClient) | `GET {endpoint}/{key}` → restituisce il dato (es. `{ newName: "..." }`) |
+| 2 | `GraphXxxService` | (opzionale) pre-check su Entra/Intune per evitare azioni che lascerebbero stato inconsistente |
+| 3 | `GraphXxxService` | invoca l'azione Graph (es. `setDeviceName`) |
 
-Esempio di riferimento: `src/Capabilities.Rename/` —
+Riferimento: `src/Capabilities.Rename/` —
 - `Services/ICustomerRenameClient.cs` (+ `HttpCustomerRenameClient.cs`):
-  client tipizzato con classificazione 2xx=accepted, 4xx non-408/429=permanent,
-  5xx/408/429/timeout/network=transient.
-- `Runners/RenameActionRunner.cs`: pipeline ridotta a payload-validation →
-  idempotency reservation → REST call → mark issued/failed → status init.
-- Bicep: stesso pattern di `funcBitLocker` ma senza `Graph__*` env var e
-  senza role-assignment Graph per la UAMI.
+  client typed con classificazione `Resolved/NotFound/Permanent/Transient`.
+  Supporta sia URL con placeholder `{serial}` sia base-URL + path append.
+- `Services/GraphRenameService.cs`: collision check + `setDeviceName`.
+  La collision check è **non-negoziabile** per `device-rename` perché Entra
+  (a differenza dell'AD on-prem) non impone unicità sul `displayName`
+  dei device — due o più computer object possono avere lo stesso nome.
+  Comportamento configurabile via `Rename:OnCollision` = `block` (default,
+  consigliato) | `warn`.
+- `Runners/RenameActionRunner.cs`: pipeline a 4 step (validate → reserve →
+  lookup → collision → setDeviceName), eventi
+  `rename.lookup.*` / `rename.collision.*` / `rename.graph.setname.*`.
+- Bicep: stesso pattern di `funcBitLocker` con UAMI dedicata; Graph
+  app-roles richieste: `DeviceManagementManagedDevices.PrivilegedOperations.All`
+  (per `setDeviceName`), `DeviceManagementManagedDevices.Read.All`,
+  `Device.Read.All` (per la collision check).
 
-Le entry App Configuration per attivare la capability sono uguali — basta
-sostituire il valore di `Forwarders:<newcap>:Queue` e aggiungere il nome
-del tipo alla `Actions:AllowedTypes`. Il client cliente conserva un
-`AuthHeaderValue` come **Key Vault reference**:
+App Configuration entries:
 
 ```pwsh
+az appconfig kv set --name <appCfgName> --key 'Actions:AllowedTypes' --value '...,device-rename'
+az appconfig kv set --name <appCfgName> --key 'Forwarders:device-rename:Queue' --value 'rename-action'
 az appconfig kv set --name <appCfgName> --key 'Rename:Endpoint' `
-    --value 'https://customer-internal.example.com/api/devices/rename'
-
+    --value 'https://customer-cmdb.example.com/api/devices/{serial}'
+az appconfig kv set --name <appCfgName> --key 'Rename:NewNameJsonPath' --value 'newName'
+az appconfig kv set --name <appCfgName> --key 'Rename:OnCollision' --value 'block'
 az appconfig kv set --name <appCfgName> --key 'Rename:AuthHeaderValue' `
     --content-type 'application/vnd.microsoft.appconfig.keyvaultref+json;charset=utf-8' `
     --value '{"uri":"https://<kv>.vault.azure.net/secrets/RenameCustomerApiKey"}'

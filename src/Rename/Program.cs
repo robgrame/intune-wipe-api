@@ -15,12 +15,16 @@ var host = new HostBuilder()
     {
         services.AddIntuneDeviceActionsCore();
         services.AddIntuneDeviceActionsOpenTelemetry(role: "rename");
-        // NOTE: no AddGraphClient() — rename uses a customer REST endpoint, not Graph.
+
+        // Rename uses Microsoft Graph to invoke setDeviceName + check Entra
+        // displayName collisions, in addition to the customer CMDB lookup.
+        services.AddGraphClient();
+
         services.AddActionIdempotency();          // reserve / mark issued / mark failed
         services.AddActionStatusTracker();        // init state on action issued
 
         // Rename capability — Rename role hosts the executor:
-        //   AddRenameExecutor: HttpCustomerRenameClient + RenameActionRunner.
+        //   AddRenameExecutor: HttpCustomerRenameClient + GraphRenameService + RenameActionRunner.
         // The consumer function resolves RenameActionRunner directly (concrete type).
         services.AddRenameExecutor();
     })

@@ -531,6 +531,7 @@ function Invoke-RunbookPublish {
         @{ Name = 'Invoke-DeviceWipe';          File = 'Invoke-DeviceWipe.runbook.ps1' }
         @{ Name = 'Invoke-AutopilotRegister';   File = 'Invoke-AutopilotRegister.runbook.ps1' }
         @{ Name = 'Invoke-RotateBitLockerKey';  File = 'Invoke-RotateBitLockerKey.runbook.ps1' }
+        @{ Name = 'Invoke-DeviceRename';        File = 'Invoke-DeviceRename.runbook.ps1' }
     )
     try {
         foreach ($m in $map) {

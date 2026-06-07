@@ -67,6 +67,14 @@ $assignments = @{
         'Device.Read.All',
         'GroupMember.Read.All'
     )
+    'uamiRename' = @(
+        # setDeviceName is a privileged Intune action (rename queued for next MDM sync)
+        'DeviceManagementManagedDevices.PrivilegedOperations.All',
+        # Read.All used to fetch managedDevice for diagnostics / status init
+        'DeviceManagementManagedDevices.Read.All',
+        # Entra displayName collision pre-check (devices?$filter=displayName eq ...)
+        'Device.Read.All'
+    )
     'uami'     = @(
         'DeviceManagementManagedDevices.Read.All'
     )
@@ -77,7 +85,8 @@ $uamiResourceNames = @{
     'uamiWipe'      = "$NamePrefix-uami-wipe-*"
     'uamiAutopilot' = "$NamePrefix-uami-autopilot-*"
     'uamiBitLocker' = "$NamePrefix-uami-bitlocker-*"
-    'uami'          = "$NamePrefix-uami-*"   # filtered to exclude -wipe-/-web-/-autopilot-/-bitlocker-
+    'uamiRename'    = "$NamePrefix-uami-rename-*"
+    'uami'          = "$NamePrefix-uami-*"   # filtered to exclude -wipe-/-web-/-autopilot-/-bitlocker-/-rename-
 }
 
 Write-Step "Resolving Microsoft Graph service principal"
@@ -101,18 +110,22 @@ $uamiByLogical = @{}
 $uamiWipe = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-wipe-*" } | Select-Object -First 1
 $uamiAutopilot = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-autopilot-*" } | Select-Object -First 1
 $uamiBitLocker = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-bitlocker-*" } | Select-Object -First 1
-$uamiPoll = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-*" -and $_.name -notlike "$NamePrefix-uami-wipe-*" -and $_.name -notlike "$NamePrefix-uami-web-*" -and $_.name -notlike "$NamePrefix-uami-autopilot-*" -and $_.name -notlike "$NamePrefix-uami-bitlocker-*" } | Select-Object -First 1
+$uamiRename    = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-rename-*" } | Select-Object -First 1
+$uamiPoll = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-*" -and $_.name -notlike "$NamePrefix-uami-wipe-*" -and $_.name -notlike "$NamePrefix-uami-web-*" -and $_.name -notlike "$NamePrefix-uami-autopilot-*" -and $_.name -notlike "$NamePrefix-uami-bitlocker-*" -and $_.name -notlike "$NamePrefix-uami-rename-*" } | Select-Object -First 1
 if (-not $uamiWipe) { throw "uamiWipe not found (pattern $NamePrefix-uami-wipe-*)" }
 if (-not $uamiAutopilot) { throw "uamiAutopilot not found (pattern $NamePrefix-uami-autopilot-*)" }
 if (-not $uamiBitLocker) { throw "uamiBitLocker not found (pattern $NamePrefix-uami-bitlocker-*)" }
-if (-not $uamiPoll) { throw "uami (status poller) not found (pattern $NamePrefix-uami-* excluding -wipe-/-web-/-autopilot-/-bitlocker-)" }
+if (-not $uamiRename)    { Write-Warn2 "uamiRename not found (pattern $NamePrefix-uami-rename-*) — skipping rename role grants (deploy with current bicep to create it)" }
+if (-not $uamiPoll) { throw "uami (status poller) not found (pattern $NamePrefix-uami-* excluding -wipe-/-web-/-autopilot-/-bitlocker-/-rename-)" }
 $uamiByLogical['uamiWipe'] = $uamiWipe
 $uamiByLogical['uamiAutopilot'] = $uamiAutopilot
 $uamiByLogical['uamiBitLocker'] = $uamiBitLocker
+if ($uamiRename) { $uamiByLogical['uamiRename'] = $uamiRename }
 $uamiByLogical['uami']     = $uamiPoll
 Write-Ok "uamiWipe      -> $($uamiWipe.name)  (principalId $($uamiWipe.principalId))"
 Write-Ok "uamiAutopilot -> $($uamiAutopilot.name)  (principalId $($uamiAutopilot.principalId))"
 Write-Ok "uamiBitLocker -> $($uamiBitLocker.name)  (principalId $($uamiBitLocker.principalId))"
+if ($uamiRename) { Write-Ok "uamiRename    -> $($uamiRename.name)  (principalId $($uamiRename.principalId))" }
 Write-Ok "uami          -> $($uamiPoll.name)  (principalId $($uamiPoll.principalId))"
 
 $totalGranted = 0

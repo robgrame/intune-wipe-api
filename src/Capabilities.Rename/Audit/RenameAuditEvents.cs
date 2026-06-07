@@ -3,9 +3,15 @@ namespace IntuneDeviceActions.Capabilities.Rename.Audit;
 /// <summary>
 /// Rename-specific event names emitted to Application Insights customEvents.
 /// Mirrors the convention used by other capabilities (Wipe / Autopilot /
-/// BitLocker) but with a <c>rest</c> verb segment (instead of <c>graph</c>)
-/// since rename targets a customer-internal HTTP endpoint, not Microsoft
-/// Graph.
+/// BitLocker) but with TWO verb segments because the rename pipeline spans
+/// two trust boundaries:
+/// <list type="bullet">
+///   <item><c>rename.lookup.*</c> — the customer-internal CMDB call
+///         (GET serial → newName);</item>
+///   <item><c>rename.collision.*</c> — Entra displayName uniqueness check;</item>
+///   <item><c>rename.graph.setname.*</c> — the Microsoft Graph
+///         <c>setDeviceName</c> action against the managed device.</item>
+/// </list>
 ///
 /// KQL convention: <c>customEvents | where name startswith "rename."</c>
 /// covers every rename-specific row; combine with
@@ -13,10 +19,21 @@ namespace IntuneDeviceActions.Capabilities.Rename.Audit;
 /// </summary>
 public static class RenameAuditEvents
 {
-    // Customer REST call outcomes
-    public const string RestIssued          = "rename.rest.issued";
-    public const string RestFailedPermanent = "rename.rest.failed-permanent";
-    public const string RestTransientError  = "rename.rest.transient-error";
+    // Customer lookup (GET serial -> newName)
+    public const string LookupIssued          = "rename.lookup.issued";
+    public const string LookupNotFound        = "rename.lookup.not-found";
+    public const string LookupFailedPermanent = "rename.lookup.failed-permanent";
+    public const string LookupTransientError  = "rename.lookup.transient-error";
+
+    // Entra displayName collision check
+    public const string CollisionDetected     = "rename.collision.detected";
+    public const string CollisionBlocked      = "rename.collision.blocked";
+    public const string CollisionCheckFailed  = "rename.collision.check-failed";
+
+    // Microsoft Graph setDeviceName action against the managed device
+    public const string GraphSetNameIssued          = "rename.graph.setname.issued";
+    public const string GraphSetNameFailedPermanent = "rename.graph.setname.failed-permanent";
+    public const string GraphSetNameTransientError  = "rename.graph.setname.transient-error";
 
     // Rename Function App (consumer of the per-capability rename-action queue)
     public const string ActionConsumed        = "rename.action.consumed";
@@ -26,5 +43,5 @@ public static class RenameAuditEvents
 
     // Validation
     public const string MissingSerial         = "rename.denied.missing-serial";
-    public const string MissingNewName        = "rename.denied.missing-new-name";
+    public const string MissingIntuneDeviceId = "rename.denied.missing-intune-device-id";
 }

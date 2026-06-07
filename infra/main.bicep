@@ -98,10 +98,18 @@ param bitlockerActionQueueName string = 'bitlocker-action'
 @description('Service Bus queue name for the dedicated rename-runner Function App.')
 param renameActionQueueName string = 'rename-action'
 
-@description('Customer-internal device-rename REST endpoint URL. Leave empty to configure via App Configuration post-deploy.')
+@description('Customer-internal device-rename REST endpoint URL (LOOKUP — given a serial returns the canonical new name). Supports {serial} placeholder. Leave empty to configure via App Configuration post-deploy.')
 param renameEndpoint string = ''
 
+@description('HTTP header name used to authenticate against the customer rename lookup endpoint. Header value should be stored in Key Vault and bound via App Configuration.')
 param renameAuthHeaderName string = 'X-Api-Key'
+
+@description('Name of the response JSON property holding the resolved hostname (e.g. "newName", "deviceName", "hostname"). Default: newName.')
+param renameNewNameJsonPath string = 'newName'
+
+@description('Behaviour when the resolved name collides with an existing Entra device displayName (Entra does NOT enforce uniqueness). "block" → fail closed (recommended); "warn" → audit + proceed.')
+@allowed([ 'block', 'warn' ])
+param renameOnCollision string = 'block'
 
 // ── Storage (blob + tables) ──────────────────────────────────────────────────
 @description('Blob container name used as the idempotency ledger for action operations')
@@ -1032,6 +1040,48 @@ resource runbookBitLocker 'Microsoft.Automation/automationAccounts/runbooks@2023
     logProgress: true
     description: 'Alternative bitlocker-rotate executor (demo plug-in variant). Same envelope as BitLockerRotateRunner.'
   }
+}
+
+resource runbookRename 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Invoke-DeviceRename'
+  location: location
+  properties: {
+    runbookType: 'PowerShell72'
+    logVerbose: true
+    logProgress: true
+    description: 'Alternative device-rename executor (demo plug-in variant). Same envelope as RenameActionRunner; LOOKUP customer CMDB + Entra collision check + Graph setDeviceName.'
+  }
+}
+
+// ── Rename AA variables (consumed by Invoke-DeviceRename.runbook.ps1) ───────
+// Endpoint left empty (and isEncrypted=false) lets the operator update it
+// post-deploy via `Set-AutomationVariable`. AuthHeaderValue is encrypted —
+// set it to a non-empty secret value via az CLI / portal after deploy.
+resource aaVarRenameEndpoint 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Rename:Endpoint'
+  properties: { isEncrypted: false, value: '"${renameEndpoint}"' }
+}
+resource aaVarRenameAuthHeaderName 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Rename:AuthHeaderName'
+  properties: { isEncrypted: false, value: '"${renameAuthHeaderName}"' }
+}
+resource aaVarRenameAuthHeaderValue 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Rename:AuthHeaderValue'
+  properties: { isEncrypted: true, value: '""' }
+}
+resource aaVarRenameNewNameJsonPath 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Rename:NewNameJsonPath'
+  properties: { isEncrypted: false, value: '"${renameNewNameJsonPath}"' }
+}
+resource aaVarRenameOnCollision 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = if (enableRunbookVariant) {
+  parent: automationAccount
+  name: 'Rename:OnCollision'
+  properties: { isEncrypted: false, value: '"${renameOnCollision}"' }
 }
 
 resource raAaLedger 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableRunbookVariant) {
@@ -1996,9 +2046,11 @@ resource funcRename 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'Audit__TableName',        value: auditTableName }
         { name: 'ActionStatus__TableName',   value: actionStatusTableName }
         { name: 'ActionStatus__PollMaxAgeHours', value: string(actionStatusPollMaxAgeHours) }
-        { name: 'Rename__Endpoint',        value: renameEndpoint }
-        { name: 'Rename__AuthHeaderName',  value: renameAuthHeaderName }
-        { name: 'Rename__TimeoutSeconds',  value: '30' }
+        { name: 'Rename__Endpoint',          value: renameEndpoint }
+        { name: 'Rename__AuthHeaderName',    value: renameAuthHeaderName }
+        { name: 'Rename__NewNameJsonPath',   value: renameNewNameJsonPath }
+        { name: 'Rename__OnCollision',       value: renameOnCollision }
+        { name: 'Rename__TimeoutSeconds',    value: '30' }
       ]
     }
   }

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "16709559502659342865"
+      "templateHash": "3896349762445708421"
     }
   },
   "parameters": {
@@ -190,12 +190,33 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Customer-internal device-rename REST endpoint URL. Leave empty to configure via App Configuration post-deploy."
+        "description": "Customer-internal device-rename REST endpoint URL (LOOKUP — given a serial returns the canonical new name). Supports {serial} placeholder. Leave empty to configure via App Configuration post-deploy."
       }
     },
     "renameAuthHeaderName": {
       "type": "string",
-      "defaultValue": "X-Api-Key"
+      "defaultValue": "X-Api-Key",
+      "metadata": {
+        "description": "HTTP header name used to authenticate against the customer rename lookup endpoint."
+      }
+    },
+    "renameNewNameJsonPath": {
+      "type": "string",
+      "defaultValue": "newName",
+      "metadata": {
+        "description": "Name of the response JSON property holding the resolved hostname. Default: newName."
+      }
+    },
+    "renameOnCollision": {
+      "type": "string",
+      "defaultValue": "block",
+      "allowedValues": [
+        "block",
+        "warn"
+      ],
+      "metadata": {
+        "description": "Behaviour when the resolved name collides with an existing Entra device displayName. \"block\" → fail closed (recommended); \"warn\" → audit + proceed."
+      }
     },
     "ledgerContainerName": {
       "type": "string",
@@ -1817,6 +1838,87 @@
     },
     {
       "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/runbooks",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Invoke-DeviceRename')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "runbookType": "PowerShell72",
+        "logVerbose": true,
+        "logProgress": true,
+        "description": "Alternative device-rename executor (demo plug-in variant). Same envelope as RenameActionRunner; LOOKUP customer CMDB + Entra collision check + Graph setDeviceName."
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Rename:Endpoint')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('renameEndpoint'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Rename:AuthHeaderName')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('renameAuthHeaderName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Rename:AuthHeaderValue')]",
+      "properties": {
+        "isEncrypted": true,
+        "value": "\"\""
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Rename:NewNameJsonPath')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('renameNewNameJsonPath'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('automationAccountName'), 'Rename:OnCollision')]",
+      "properties": {
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('renameOnCollision'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('automationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableRunbookVariant')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('stProcName'), 'default', parameters('ledgerContainerName'))]",
@@ -2902,6 +3004,14 @@
             {
               "name": "Rename__AuthHeaderName",
               "value": "[parameters('renameAuthHeaderName')]"
+            },
+            {
+              "name": "Rename__NewNameJsonPath",
+              "value": "[parameters('renameNewNameJsonPath')]"
+            },
+            {
+              "name": "Rename__OnCollision",
+              "value": "[parameters('renameOnCollision')]"
             },
             {
               "name": "Rename__TimeoutSeconds",

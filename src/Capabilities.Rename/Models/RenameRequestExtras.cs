@@ -16,22 +16,25 @@ namespace IntuneDeviceActions.Capabilities.Rename.Models;
 ///   "entraDeviceId": "...",
 ///   "intuneDeviceId": "...",
 ///   "rename": {
-///     "serialNumber": "PF3X9ABC",
-///     "newName":      "WS-CONTOSO-101"
+///     "serialNumber": "PF3X9ABC"
 ///   }
 /// }
 /// </code>
-/// Both fields are required — the runner emits
-/// <c>rename.denied.missing-serial</c> / <c>rename.denied.missing-new-name</c>
-/// and records a terminal status when either is missing or whitespace.
+/// <para>
+/// The new device name is NOT supplied by the caller — the rename runner queries
+/// the customer-internal REST endpoint with the serial number and the customer
+/// system returns the authoritative new name. This keeps the naming convention
+/// in the customer's CMDB/asset-management system rather than scattered across
+/// client scripts.
+/// </para>
+/// <para>
+/// Only <see cref="SerialNumber"/> is required — the runner emits
+/// <c>rename.denied.missing-serial</c> and records a terminal status if absent.
+/// </para>
 /// </summary>
 public sealed class RenameRequestExtras
 {
-    /// <summary>Hardware serial number passed to the customer REST endpoint as the device key.</summary>
+    /// <summary>Hardware serial number passed to the customer REST endpoint as the lookup key.</summary>
     [JsonPropertyName("serialNumber")]
     public string? SerialNumber { get; set; }
-
-    /// <summary>Desired new device name. Validation/normalization is the customer endpoint's responsibility.</summary>
-    [JsonPropertyName("newName")]
-    public string? NewName { get; set; }
 }

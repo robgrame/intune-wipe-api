@@ -18,11 +18,9 @@ namespace IntuneDeviceActions.Capabilities.Rename;
 ///                                      <c>device-rename</c> envelopes to the
 ///                                      rename-action queue).</item>
 ///   <item><c>AddRenameExecutor</c>   → Rename (privileged executor:
-///                                      ICustomerRenameClient + RenameActionRunner).</item>
+///                                      ICustomerRenameClient + GraphRenameService +
+///                                      RenameActionRunner).</item>
 /// </list>
-/// No status-probe variant: the customer REST endpoint is fire-and-forget for
-/// the action poller; the runner records a terminal "issued" or "failed"
-/// status synchronously inside <see cref="RenameActionRunner.RunAsync"/>.
 /// </summary>
 public static class RenameHostBuilderExtensions
 {
@@ -46,15 +44,18 @@ public static class RenameHostBuilderExtensions
 
     /// <summary>
     /// Registers the rename executor (Rename role only):
-    /// <see cref="HttpCustomerRenameClient"/> (typed HttpClient) +
-    /// <see cref="RenameActionRunner"/>. The runner is registered as a concrete
-    /// singleton (resolved directly by the consumer function) AND as
-    /// <see cref="IActionRunner"/>.
+    /// <see cref="HttpCustomerRenameClient"/> (typed HttpClient for the CMDB
+    /// lookup), <see cref="GraphRenameService"/> (Entra collision check +
+    /// Intune setDeviceName) and <see cref="RenameActionRunner"/>.
+    /// The runner is registered as a concrete singleton (resolved directly by
+    /// the consumer function) AND as <see cref="IActionRunner"/>.
+    /// Requires <c>AddGraphClient()</c> from Shared.
     /// </summary>
     public static IServiceCollection AddRenameExecutor(this IServiceCollection services)
     {
         // Typed HttpClient — IHttpClientFactory manages handler lifetime.
         services.AddHttpClient<ICustomerRenameClient, HttpCustomerRenameClient>();
+        services.AddSingleton<GraphRenameService>();
 
         services.AddSingleton<RenameActionRunner>();
         services.AddSingleton<IActionRunner>(sp => sp.GetRequiredService<RenameActionRunner>());

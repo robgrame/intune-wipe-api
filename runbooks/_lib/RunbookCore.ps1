@@ -89,6 +89,20 @@ $script:RbcAudit = @{
     BlRotateIssued                   = 'bitlocker.graph.rotate.issued'
     BlRotateFailedPermanent          = 'bitlocker.graph.rotate.failed-permanent'
     BlRotateTransientError           = 'bitlocker.graph.rotate.transient-error'
+
+    # device-rename runbook variant (LOOKUP customer CMDB + Entra collision check + Graph setDeviceName)
+    RenameLookupIssued               = 'rename.lookup.issued'
+    RenameLookupNotFound             = 'rename.lookup.not-found'
+    RenameLookupFailedPermanent      = 'rename.lookup.failed-permanent'
+    RenameLookupTransientError       = 'rename.lookup.transient-error'
+    RenameCollisionDetected          = 'rename.collision.detected'
+    RenameCollisionBlocked           = 'rename.collision.blocked'
+    RenameCollisionCheckFailed       = 'rename.collision.check-failed'
+    RenameSetNameIssued              = 'rename.graph.setname.issued'
+    RenameSetNameFailedPermanent     = 'rename.graph.setname.failed-permanent'
+    RenameSetNameTransientError      = 'rename.graph.setname.transient-error'
+    RenameDeniedMissingSerial        = 'rename.denied.missing-serial'
+    RenameDeniedMissingIntuneId      = 'rename.denied.missing-intune-device-id'
 }
 
 # Storage REST API version. 2020-12-06 supports Bearer-token (AAD) auth for

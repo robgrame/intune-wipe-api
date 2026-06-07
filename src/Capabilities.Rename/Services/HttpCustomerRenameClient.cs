@@ -1,5 +1,5 @@
 using System.Net;
-using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -7,21 +7,20 @@ namespace IntuneDeviceActions.Capabilities.Rename.Services;
 
 /// <summary>
 /// <see cref="ICustomerRenameClient"/> over <see cref="HttpClient"/>. Reads
-/// the endpoint URL and an optional auth header (name + value, typically a
-/// Key Vault reference) from configuration:
+/// the endpoint URL and an optional auth header from configuration:
 /// <list type="bullet">
-///   <item><c>Rename:Endpoint</c> — absolute URL (required).</item>
+///   <item><c>Rename:Endpoint</c> — absolute URL (required). May contain the
+///         <c>{serial}</c> placeholder; when absent the serial is URL-encoded
+///         and appended as a path segment.</item>
 ///   <item><c>Rename:AuthHeaderName</c> — header name. Default <c>X-Api-Key</c>. Empty disables.</item>
 ///   <item><c>Rename:AuthHeaderValue</c> — header value. Recommended: Key Vault reference.</item>
+///   <item><c>Rename:NewNameJsonPath</c> — name of the response property holding
+///         the resolved hostname. Default <c>newName</c>.</item>
 ///   <item><c>Rename:TimeoutSeconds</c> — request timeout. Default <c>30</c>.</item>
 /// </list>
 ///
-/// Classification mirrors <c>GraphErrorClassifier</c>:
-/// <list type="bullet">
-///   <item>2xx → <see cref="RenameRestOutcome.Kind.Accepted"/></item>
-///   <item>4xx (except 408 / 429) → <see cref="RenameRestOutcome.Kind.Permanent"/></item>
-///   <item>5xx, 408, 429, <see cref="TaskCanceledException"/> (timeout), <see cref="HttpRequestException"/> → <see cref="RenameRestOutcome.Kind.Transient"/></item>
-/// </list>
+/// Response contract on 2xx (default <c>NewNameJsonPath</c>):
+/// <code>{ "newName": "WS-CONTOSO-101" }</code>
 /// </summary>
 public sealed class HttpCustomerRenameClient : ICustomerRenameClient
 {
@@ -35,26 +34,24 @@ public sealed class HttpCustomerRenameClient : ICustomerRenameClient
         _cfg = cfg;
         _log = log;
 
-        // Only set the timeout once — HttpClient.Timeout is process-wide and
-        // throws if set after a request. The IHttpClientFactory typed-client
-        // gives us a fresh instance per scope so this branch is safe.
-        if (_http.Timeout == TimeSpan.FromSeconds(100)) // default HttpClient.Timeout
+        // Only set the timeout once — HttpClient.Timeout is per-instance and
+        // throws if mutated after a request. IHttpClientFactory hands us a
+        // fresh typed-client per scope so this branch is safe.
+        if (_http.Timeout == TimeSpan.FromSeconds(100)) // default
         {
             var seconds = int.TryParse(_cfg["Rename:TimeoutSeconds"], out var t) && t > 0 ? t : 30;
             _http.Timeout = TimeSpan.FromSeconds(seconds);
         }
     }
 
-    public async Task<RenameRestOutcome> RenameAsync(RenameRestRequest request, CancellationToken ct)
+    public async Task<RenameLookupOutcome> ResolveNewNameAsync(string serialNumber, string correlationId, CancellationToken ct)
     {
-        var endpoint = _cfg["Rename:Endpoint"]
+        var template = _cfg["Rename:Endpoint"]
             ?? throw new InvalidOperationException(
-                "Rename:Endpoint is not configured (must be the customer-internal rename URL).");
+                "Rename:Endpoint is not configured (must be the customer-internal CMDB lookup URL).");
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = JsonContent.Create(request),
-        };
+        var url = BuildUrl(template, serialNumber);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
 
         var headerName  = _cfg["Rename:AuthHeaderName"]  ?? "X-Api-Key";
         var headerValue = _cfg["Rename:AuthHeaderValue"];
@@ -62,53 +59,93 @@ public sealed class HttpCustomerRenameClient : ICustomerRenameClient
         {
             req.Headers.TryAddWithoutValidation(headerName, headerValue);
         }
-
-        if (!string.IsNullOrWhiteSpace(request.CorrelationId))
+        if (!string.IsNullOrWhiteSpace(correlationId))
         {
-            req.Headers.TryAddWithoutValidation("X-Correlation-Id", request.CorrelationId);
+            req.Headers.TryAddWithoutValidation("X-Correlation-Id", correlationId);
         }
+        req.Headers.Accept.ParseAdd("application/json");
 
         HttpResponseMessage resp;
         try
         {
-            resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
         }
         catch (TaskCanceledException tcex) when (!ct.IsCancellationRequested)
         {
-            _log.LogWarning(tcex, "Customer rename endpoint timed out (corr={Corr})", request.CorrelationId);
-            return new RenameRestOutcome(RenameRestOutcome.Kind.Transient, 0, "timeout");
+            _log.LogWarning(tcex, "Customer rename lookup timed out (corr={Corr}, serial={Serial})", correlationId, serialNumber);
+            return new RenameLookupOutcome(RenameLookupOutcome.Kind.Transient, 0, "timeout");
         }
         catch (HttpRequestException hrex)
         {
-            _log.LogWarning(hrex, "Customer rename endpoint unreachable (corr={Corr})", request.CorrelationId);
-            return new RenameRestOutcome(RenameRestOutcome.Kind.Transient, 0, $"network:{hrex.Message}");
+            _log.LogWarning(hrex, "Customer rename lookup unreachable (corr={Corr}, serial={Serial})", correlationId, serialNumber);
+            return new RenameLookupOutcome(RenameLookupOutcome.Kind.Transient, 0, $"network:{hrex.Message}");
         }
 
         var status = (int)resp.StatusCode;
         if (resp.IsSuccessStatusCode)
         {
-            resp.Dispose();
-            return new RenameRestOutcome(RenameRestOutcome.Kind.Accepted, status, "accepted");
+            string body;
+            try { body = await resp.Content.ReadAsStringAsync(ct); }
+            catch { body = string.Empty; }
+            finally { resp.Dispose(); }
+
+            var nameProp = _cfg["Rename:NewNameJsonPath"] ?? "newName";
+            var newName = ExtractName(body, nameProp);
+            if (string.IsNullOrWhiteSpace(newName))
+            {
+                return new RenameLookupOutcome(RenameLookupOutcome.Kind.Permanent, status,
+                    $"missing-or-empty-property:{nameProp}");
+            }
+            return new RenameLookupOutcome(RenameLookupOutcome.Kind.Resolved, status, "resolved", newName.Trim());
         }
 
-        string body;
+        string err;
         try
         {
-            body = await resp.Content.ReadAsStringAsync(ct);
-            if (body.Length > 200) body = body[..200] + "…";
+            err = await resp.Content.ReadAsStringAsync(ct);
+            if (err.Length > 200) err = err[..200] + "…";
         }
-        catch { body = "(unavailable)"; }
+        catch { err = "(unavailable)"; }
         resp.Dispose();
 
         var kind = status switch
         {
-            (int)HttpStatusCode.RequestTimeout  => RenameRestOutcome.Kind.Transient, // 408
-            (int)HttpStatusCode.TooManyRequests => RenameRestOutcome.Kind.Transient, // 429
-            >= 400 and < 500                    => RenameRestOutcome.Kind.Permanent,
-            >= 500                              => RenameRestOutcome.Kind.Transient,
-            _                                   => RenameRestOutcome.Kind.Transient,
+            (int)HttpStatusCode.NotFound        => RenameLookupOutcome.Kind.NotFound,    // 404
+            (int)HttpStatusCode.RequestTimeout  => RenameLookupOutcome.Kind.Transient,   // 408
+            (int)HttpStatusCode.TooManyRequests => RenameLookupOutcome.Kind.Transient,   // 429
+            >= 400 and < 500                    => RenameLookupOutcome.Kind.Permanent,
+            >= 500                              => RenameLookupOutcome.Kind.Transient,
+            _                                   => RenameLookupOutcome.Kind.Transient,
         };
+        return new RenameLookupOutcome(kind, status, $"http-{status}:{err}");
+    }
 
-        return new RenameRestOutcome(kind, status, $"http-{status}:{body}");
+    internal static string BuildUrl(string template, string serial)
+    {
+        var encoded = Uri.EscapeDataString(serial);
+        if (template.Contains("{serial}", StringComparison.OrdinalIgnoreCase))
+        {
+            return template.Replace("{serial}", encoded, StringComparison.OrdinalIgnoreCase);
+        }
+        return template.EndsWith('/') ? template + encoded : template + "/" + encoded;
+    }
+
+    private static string? ExtractName(string body, string propName)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (string.Equals(prop.Name, propName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
+                }
+            }
+        }
+        catch (JsonException) { /* not JSON or malformed */ }
+        return null;
     }
 }
