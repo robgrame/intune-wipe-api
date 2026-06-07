@@ -5,7 +5,7 @@
 [![Bicep](https://img.shields.io/badge/IaC-Bicep-1E5DBE?logo=azurepipelines&logoColor=white)](https://learn.microsoft.com/azure/azure-resource-manager/bicep/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Soluzione serverless end-to-end per consentire ad un dispositivo Windows gestito da Intune di richiedere in autonomia il proprio **wipe (factory reset)** — e, in prospettiva, altre _device actions_ amministrative — con difesa in profondità: certificato dispositivo Intune (mTLS), allow-list nativa via gruppo Entra ID, validazione di ownership, esecuzione asincrona disaccoppiata via Service Bus e audit completo.
+> Soluzione serverless end-to-end per consentire ad un dispositivo Windows gestito da Intune di richiedere in autonomia un set di **device actions** amministrative (wipe / Autopilot self-registration / BitLocker recovery-key rotation / **device rename**) — con difesa in profondità: certificato dispositivo Intune (mTLS), allow-list nativa via gruppo Entra ID, validazione di ownership, esecuzione asincrona disaccoppiata via Service Bus e audit completo.
 
 > Il nome storico del repository è `intune-wipe-api`; la codebase attuale (`IntuneDeviceActions`) generalizza il modello per ospitare nuove _action_ oltre al wipe.
 
@@ -13,7 +13,7 @@
 
 - [Architettura](#architettura)
 - [Componenti](#componenti)
-- [Isolamento delle tre Function App](#isolamento-delle-tre-function-app)
+- [Isolamento delle Function App per capability](#isolamento-delle-function-app-per-capability)
 - [Controlli di sicurezza](#controlli-di-sicurezza-in-profondit%C3%A0)
 - [Permessi Microsoft Graph](#permessi-microsoft-graph)
 - [Quickstart deploy](#quickstart-deploy)
@@ -166,29 +166,34 @@ Eventi audit dedicati: `action.dispatch.enqueued`, `action.dispatch.received`,
 | 4 | **`RequestIntake`** (Service Bus trigger, non esposta) | **Proc** | **Dispatcher sottile**: valida formato + app role, traduce il messaggio in un `ActionDispatchMessage{ActionType="wipe"}` e lo accoda su `action-dispatch`. Nessuna logica di business. |
 | 4b | **Service Bus queue** `action-dispatch` | Proc | Coda del router plug-in. Decouple il dispatcher dai runner concreti; nuove capability si aggiungono come nuovo `IActionRunner` senza toccare HTTP, queue o dispatcher. |
 | 4c | **`ActionDispatch`** (Service Bus trigger, non esposta) | **Proc** | **Router** plug-in: deserializza la busta, risolve l'`IActionRunner` per `ActionType` via `ActionRunnerRegistry`, esegue. Onora `FailOnError` per la retry policy della coda. |
-| 4d | **`WipeForwardingRunner`** (`IActionRunner`, Type=`wipe`) | **Proc** | Runner non privilegiato: **inoltra** la busta sulla coda `wipe-action`. Il Proc non chiama Graph né tocca il ledger. |
-| 4e | **`WipeRunbookForwardingRunner`** (`IActionRunner`, Type=`wipe-runbook`) | **Proc** | Variante demo: invece di accodare, fa `POST` su un webhook **Azure Automation** (runbook PowerShell 7.2 `Invoke-DeviceWipe`). Stesso contratto, runtime diverso. |
-| 4f | **Service Bus queue** `wipe-action` | Proc→Wipe | Coda per-capability che consegna la busta alla sola app privilegiata. |
-| 4g | **`WipeAction`** (Service Bus trigger, non esposta) | **Wipe** | Consumer dedicato che risolve direttamente `WipeActionRunner`. È l'unica function deployata sull'app privilegiata. |
+| 4d | **`WipeForwardingRunner` / `AutopilotForwardingRunner` / `BitLockerForwardingRunner` / `RenameForwardingRunner`** (`IActionRunner`) | **Proc** | Runner non privilegiati: **inoltrano** la busta sulla coda per-capability (`wipe-action`, `autopilot-action`, `bitlocker-action`, `rename-action`). Il Proc non chiama Graph né tocca il ledger. |
+| 4e | **`*RunbookForwardingRunner`** (varianti `wipe-runbook` / `autopilot-runbook` / `bitlocker-runbook` / `device-rename-runbook`) | **Proc** | Varianti demo: invece di accodare, fanno `POST` su un webhook **Azure Automation** (runbook PowerShell 7.2 in `runbooks/`). Stesso contratto, runtime diverso, attach **config-driven** via `RunbookBridge:Routes:<actionType>` (zero codice infrastrutturale per aggiungere una nuova runbook). |
+| 4f | **Service Bus queue** `wipe-action` / `autopilot-action` / `bitlocker-action` / `rename-action` | Proc→app privilegiata | Code per-capability che consegnano la busta alla sola app autorizzata. |
+| 4g | **`WipeAction` / `AutopilotAction` / `BitLockerAction` / `RenameAction`** (Service Bus trigger, non esposte) | **Wipe / Autopilot / BitLocker / Rename** | Consumer dedicati che risolvono direttamente il runner della capability. Sono le uniche function deployate sulla rispettiva app privilegiata. |
 | 4h | **`WipeActionRunner`** (`IActionRunner`, Type=`wipe`) | **Wipe** | Logica wipe vera: risolve device Entra, verifica membership gruppo, verifica ownership Intune↔Entra, **riserva slot idempotency su blob ledger**, esegue `POST /deviceManagement/managedDevices/{id}/wipe`, inizializza status tracker, esegue nudges (sync + reboot) best-effort. |
+| 4i | **`AutopilotRegisterRunner`** (Type=`autopilot-register`) | **Autopilot** | Self-registration in Windows Autopilot: importa l'hardware hash via `POST /deviceManagement/importedWindowsAutopilotDeviceIdentities`, attende il completamento dell'import, ledger + status come per il wipe. |
+| 4j | **`BitLockerRotateRunner`** (Type=`bitlocker-rotate`) | **BitLocker** | Rotazione recovery key: risolve device, verifica membership gruppo + ownership, `POST /deviceManagement/managedDevices/{id}/rotateBitLockerKeys` (chiamata raw via Kiota), ledger + status. |
+| 4k | **`RenameActionRunner`** (Type=`device-rename`) | **Rename** | Pipeline LOOKUP+Graph: **GET** verso l'endpoint CMDB del cliente (`{serial}` → `newName`), pre-check **collisioni** displayName su **Entra** _e_ Intune managedDevices (policy `block`/`warn`), `POST /deviceManagement/managedDevices/{id}/setDeviceName`, ledger + status. Non esiste probe di completamento (Intune accoda al prossimo MDM sync + reboot Windows): lo status viene marcato **terminale `issued`** appena la chiamata Graph ha successo. |
 | 5 | **Blob container** `action-ledger` | Wipe | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche con retry at-least-once. |
 | 6a | **`ActionStatus`** (HTTP Function) | **Web** | `GET /api/actions/status/{correlationId}` (canonico, action-agnostic). In mTLS, ritorna la proiezione della tabella `actionstatus`. Binding cert↔device anti-IDOR. |
 | 6b | **`ActionStatusPoller`** (Timer trigger) | **Proc** | Poller schedulato che interroga Graph per `actionState` dei wipe non terminali e aggiorna `actionstatus` + audit. |
 | 6c | **`ActionLedger_Get`** / **`ActionLedger_Reset`** (HTTP) | **Web** | Endpoint SecOps `GET`/`POST /api/action-ledger/{intuneDeviceId}[/reset]` per ispezionare/resettare il ledger. Gated da `Idempotency:AdminApiEnabled` (off di default). |
-| 7 | **Tre User-Assigned Managed Identity** | — | `idactions-uami-web` (no Graph privilegiato), `idactions-uami` (worker/proc, `Device.Read.All` + `DeviceManagementManagedDevices.Read.All` per il poller), `idactions-uami-wipe` (l'unica con i consent Graph distruttivi). |
+| 7 | **User-Assigned Managed Identities** | — | `idactions-uami-web` (no Graph privilegiato), `idactions-uami` (worker/proc, poller), `idactions-uami-wipe`, `idactions-uami-autopilot`, `idactions-uami-bitlocker`, `idactions-uami-rename` (una per capability, ciascuna con i soli consent Graph necessari per la propria action). |
 | 8 | **Azure App Configuration** | tutte | Store centralizzato delle impostazioni con refresh sentinel; ogni app lo legge via `AppConfigRefreshMiddleware` con `roleHint` (`web`/`proc`/`wipe`). |
 | 9 | **Application Insights + tabella `auditevents`** | tutte | Audit dual-write: `customEvents` (non-sampled) + Azure Table durabile, entrambi con `correlationId`. |
 
-## Isolamento delle tre Function App
+## Isolamento delle Function App per capability
 
-L'API HTTP pubblica (`Web`), il dispatcher/router (`Proc`) e l'esecutore
-privilegiato del wipe (`Wipe`) girano in **tre Function App distinte**
-(`idactions-web-*`, `idactions-proc-*`, `idactions-wipe-*`) su **plan
-separati** (1× EP1 + 2× FC1), con identità (`uami-web`, `uami`, `uami-wipe`),
-permessi, **storage account separati** (`*stw*`, `*stp*`, `*stwp*`) e
-configurazione separata. **Isolamento per artefatto**: ogni function class è
-compilata in un assembly diverso (`IntuneDeviceActions.Web/Proc/Wipe`), quindi
-una function esiste fisicamente solo sull'app a cui appartiene. Il guard
+L'API HTTP pubblica (`Web`), il dispatcher/router (`Proc`) e i quattro
+esecutori privilegiati (`Wipe`, `Autopilot`, `BitLocker`, `Rename`) girano in
+**Function App distinte** (`idactions-web-*`, `idactions-proc-*`,
+`idactions-wipe-*`, `idactions-autopilot-*`, `idactions-bitlocker-*`,
+`idactions-rename-*`) su **plan separati** (1× EP1 + 5× FC1), con identità
+(`uami-web`, `uami`, `uami-wipe`, `uami-autopilot`, `uami-bitlocker`,
+`uami-rename`), permessi, **storage account separati** e configurazione
+separata. **Isolamento per artefatto**: ogni function class è compilata in un
+assembly diverso (`IntuneDeviceActions.Web/Proc/Wipe/Autopilot/BitLocker/Rename`),
+quindi una function esiste fisicamente solo sull'app a cui appartiene. Il guard
 in-code `AppRoleGuard` (legge `App__Role`, impostato via `roleHint` su App
 Configuration) è un'ulteriore difesa fail-closed.
 
@@ -234,6 +239,9 @@ Assegnati come **application permissions** alla UAMI corrispondente (richiede co
 | UAMI | Ruoli Graph |
 |---|---|
 | `idactions-uami-wipe` (privilegiata) | `DeviceManagementManagedDevices.PrivilegedOperations.All`, `DeviceManagementManagedDevices.Read.All`, `Device.Read.All`, `GroupMember.Read.All` |
+| `idactions-uami-autopilot` | `DeviceManagementServiceConfig.ReadWrite.All`, `Device.Read.All`, `GroupMember.Read.All` |
+| `idactions-uami-bitlocker` | `DeviceManagementManagedDevices.PrivilegedOperations.All`, `DeviceManagementManagedDevices.Read.All`, `Device.Read.All`, `GroupMember.Read.All` |
+| `idactions-uami-rename` | `DeviceManagementManagedDevices.PrivilegedOperations.All`, `DeviceManagementManagedDevices.Read.All`, `Device.Read.All` (la `Device.Read.All` è usata dal pre-check di collisione `displayName` su Entra — vedi sotto) |
 | `idactions-uami` (worker / poller) | `DeviceManagementManagedDevices.Read.All` |
 | `idactions-uami-web` | nessuno (oppure `Device.Read.All` solo se si abilita `SanDnsLookup`) |
 
@@ -389,7 +397,9 @@ Usa `-Silent` per scenari unattended (test).
 
 Endpoint **action-agnostic**: il tipo di azione viaggia nel body come
 `actionType` (default `"wipe"` se omesso, validato contro
-`Actions:AllowedTypes`). Headers obbligatori:
+`Actions:AllowedTypes`). Valori supportati di default: `wipe`,
+`autopilot-register`, `bitlocker-rotate`, `device-rename` (più le rispettive
+varianti `*-runbook` se sono mappate in `RunbookBridge:Routes`). Headers obbligatori:
 
 - `x-functions-key: <function-key>`
 - `Content-Type: application/json`
@@ -412,6 +422,19 @@ Risposta `202 Accepted`:
 
 ```json
 { "status": "queued", "message": "wipe request accepted and queued", "correlationId": "..." }
+```
+
+Esempio body `device-rename` (il `newName` **non** viene passato dal client;
+lo risolve il backend interrogando il CMDB del cliente — vedi `Rename__Endpoint`):
+
+```json
+{
+  "actionType": "device-rename",
+  "deviceName": "DESKTOP-ABC",
+  "entraDeviceId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "intuneDeviceId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "rename": { "serial": "PF3X1ABC" }
+}
 ```
 
 | Code | Significato |
@@ -460,6 +483,7 @@ essere override come app settings della singola Function App.
 | `ServiceBus__WipeActionQueue` | `wipe-action` | Coda Proc → Wipe (privilegiata) |
 | `ServiceBus__AutopilotActionQueue` | `autopilot-action` | Coda Proc → Autopilot (privilegiata) |
 | `ServiceBus__BitLockerActionQueue` | `bitlocker-action` | Coda Proc → BitLocker (privilegiata) |
+| `ServiceBus__RenameActionQueue` | `rename-action` | Coda Proc → Rename (privilegiata) |
 | `Idempotency__StorageAccount` | _(da bicep)_ | Storage account del ledger blob |
 | `Idempotency__BlobContainer` | `action-ledger` | Container blob del ledger idempotency |
 | `ActionStatus__TableName` | `actionstatus` | Tabella di tracking dello stato (alimenta `GET /api/actions/status`) |
@@ -496,9 +520,13 @@ essere override come app settings della singola Function App.
 | `WipeRunbook__WebhookUrl` | _(vuoto)_ | **Deprecato** — usato dal vecchio `WipeRunbookForwardingRunner` per la sola capability `wipe-runbook`. Preferire `RunbookBridge:Routes:wipe-runbook` (vedi sotto). |
 | `RunbookBridge:Routes:<actionType>` | _(vuoto)_ | **Meccanismo plug-in** per collegare una runbook al dispatcher. Esempio: `RunbookBridge:Routes:lock-runbook = https://<webhook>`. Una chiave per ciascuna capability runbook. Trattare come secret (Key Vault reference raccomandato). Cambia richiede restart del Proc app. |
 | `BitLocker__AllowedGroupId` | _(default = `Wipe__AllowedGroupId`)_ | ObjectId gruppo Entra autorizzato alla rotazione recovery key (capability `bitlocker-rotate`) |
+| `Rename__Endpoint` | _(obbligatorio per `device-rename`)_ | URL del CMDB del cliente per il **lookup** `serial → newName`. Può contenere il placeholder `{serial}` (sostituito URL-encoded) oppure essere un base URL a cui viene appeso il serial come ultimo segmento. Mancante ⇒ esito **permanent** (`failed:config-error`), nessun retry. |
+| `Rename__AuthHeaderName` / `Rename__AuthHeaderValue` | `X-Api-Key` / _(vuoto)_ | Header opzionale per autenticare il lookup verso il CMDB. Il valore va trattato come secret (Key Vault reference raccomandato). |
+| `Rename__NewNameJsonPath` | `newName` | Nome della property nella risposta JSON 200 del CMDB che contiene il nome canonico (case-insensitive). |
+| `Rename__OnCollision` | `block` | Policy se il `newName` collide con un altro device su **Entra** (`/devices?$filter=displayName eq …`) o **Intune** (`/deviceManagement/managedDevices?$filter=deviceName eq …`). `block` = fail-closed (`denied:name-collision`); `warn` = audit + proseguire. Entra non impone unicità su `displayName` come l'AD on-prem, da qui il guardrail. |
 | `Graph__TenantId` | tenant corrente | Tenant per i token Graph |
 | `Graph__ManagedIdentityClientId` | _(da bicep)_ | clientId della UAMI |
-| `App__Role` | _(da bicep)_ | `web`\|`proc`\|`wipe`\|`autopilot`\|`bitlocker` — letto da `AppRoleGuard` per fail-closed |
+| `App__Role` | _(da bicep)_ | `web`\|`proc`\|`wipe`\|`autopilot`\|`bitlocker`\|`rename` — letto da `AppRoleGuard` per fail-closed |
 
 ### Headers HTTP richiesti dal client
 
@@ -561,8 +589,8 @@ customEvents
 ```
 .
 ├── infra/
-│   ├── main.bicep                      # Variante HARDENED: Function App + plan (1 EP1 + 4 FC1),
-│   │                                   #   5 storage, 5 UAMI, Service Bus + queue, App Configuration,
+│   ├── main.bicep                      # Variante HARDENED: Function App + plan (1 EP1 + 5 FC1),
+│   │                                   #   6 storage, 6 UAMI, Service Bus + queue, App Configuration,
 │   │                                   #   App Insights, RBAC, VNet + NAT GW + Private Endpoint,
 │   │                                   #   Automation Account + runbook (opt-in)
 │   ├── main.parameters.json
@@ -589,6 +617,7 @@ customEvents
 │   ├── Capabilities.BitLocker/         # capability "bitlocker-rotate"
 │   ├── Capabilities.Autopilot/         # capability "autopilot-register"
 │   ├── Capabilities.Autopilot.Tests/   # xUnit sulla capability Autopilot
+│   ├── Capabilities.Rename/            # capability "device-rename" (LOOKUP customer CMDB + Graph setDeviceName)
 │   ├── Web/                            # IntuneDeviceActions.Web (EP1, mTLS)
 │   │   └── Functions/                  # ActionRequest, ActionStatus, ActionLedger_*
 │   ├── Proc/                           # IntuneDeviceActions.Proc (Flex)
@@ -596,7 +625,8 @@ customEvents
 │   ├── Wipe/                           # IntuneDeviceActions.Wipe (Flex, privilegiata)
 │   │   └── Functions/                  # WipeAction (consumer wipe-action)
 │   ├── BitLocker/                      # host privilegiato BitLocker (consumer bitlocker-action)
-│   └── Autopilot/                      # host privilegiato Autopilot (consumer autopilot-action)
+│   ├── Autopilot/                      # host privilegiato Autopilot (consumer autopilot-action)
+│   └── Rename/                         # host privilegiato Rename (consumer rename-action)
 ├── tools/
 │   ├── Deploy-IntuneDeviceActions.ps1  # orchestrator end-to-end
 │   └── Grant-GraphPermissions.ps1      # grant idempotente dei ruoli Graph alle UAMI
@@ -604,9 +634,13 @@ customEvents
 │   ├── Invoke-DeviceWipe.runbook.ps1
 │   ├── Invoke-AutopilotRegister.runbook.ps1
 │   ├── Invoke-RotateBitLockerKey.runbook.ps1
+│   ├── Invoke-DeviceRename.runbook.ps1
 │   └── README.md
 ├── client/
-│   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint)
+│   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint wipe)
+│   ├── Invoke-AutopilotRegister.ps1    # PS 5.1 client (self-registration Autopilot)
+│   ├── Invoke-RotateBitLockerKey.ps1   # PS 5.1 client (rotate BitLocker key)
+│   ├── Invoke-RenameDevice.ps1         # PS 5.1 client (device rename — invia solo il serial; il newName lo risolve il backend via lookup CMDB)
 │   ├── DeviceIdentity.psm1             # modulo identità device (Pester-tested)
 │   └── WipeConfirmationDialog.ps1      # WinForms dialog (shared module)
 └── docs/
@@ -634,6 +668,7 @@ customEvents
 - [x] Script `Deploy-IntuneDeviceActions.ps1` + `Grant-GraphPermissions.ps1` end-to-end idempotenti
 - [x] Capability `autopilot-register` (self-registration in Windows Autopilot; il client raccoglie l'hardware hash, l'API esegue l'import Graph)
 - [x] Capability `bitlocker-rotate` (rotazione self-service della recovery key BitLocker)
+- [x] Capability `device-rename` (rename via lookup CMDB cliente + `setDeviceName` Graph, con pre-check collisioni `displayName` su Entra _e_ `deviceName` su Intune)
 - [ ] Notifica esito (Teams webhook / email) al termine del wipe
 - [ ] Rimozione della Function Key dal client (mTLS-only dietro APIM/App Gateway)
 - [ ] CA trust lifecycle via Key Vault references

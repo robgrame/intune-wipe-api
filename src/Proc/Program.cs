@@ -45,8 +45,10 @@ var host = new HostBuilder()
 
         // Rename capability — proc role only forwards (does NOT execute).
         //   AddRenameForwarding: RenameActionSender + RenameForwardingRunner (rename-action queue)
-        // No status probe: the rename runner records terminal status synchronously
-        // (customer REST is fire-and-forget for the poller).
+        // No status probe registered: setDeviceName has no first-party completion
+        // probe (Intune queues the rename for the next MDM sync + Windows reboot),
+        // so the rename runner records a terminal "issued" status synchronously
+        // right after the Graph call succeeds rather than leaving a pending row.
         services.AddRenameForwarding();
     })
     .Build();
