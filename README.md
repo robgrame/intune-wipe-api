@@ -177,7 +177,7 @@ Eventi audit dedicati: `action.dispatch.enqueued`, `action.dispatch.received`,
 | 5 | **Blob container** `action-ledger` | Wipe | Ledger idempotency: un blob per `intuneDeviceId` con stato `Reserved`/`Issued`/`Failed` per garantire un singolo wipe anche con retry at-least-once. |
 | 6a | **`ActionStatus`** (HTTP Function) | **Web** | `GET /api/actions/status/{correlationId}` (canonico, action-agnostic). In mTLS, ritorna la proiezione della tabella `actionstatus`. Binding cert↔device anti-IDOR. |
 | 6b | **`ActionStatusPoller`** (Timer trigger) | **Proc** | Poller schedulato che interroga Graph per `actionState` dei wipe non terminali e aggiorna `actionstatus` + audit. |
-| 6c | **`ActionLedger_Get`** / **`ActionLedger_Reset`** (HTTP) | **Web** | Endpoint SecOps `GET`/`POST /api/action-ledger/{intuneDeviceId}[/reset]` per ispezionare/resettare il ledger. Gated da `Idempotency:AdminApiEnabled` (off di default). |
+| 6c | **`ActionLedger_Get`** / **`ActionLedger_Reset`** (HTTP) | **Web** | Endpoint SecOps `GET`/`POST /api/actions/ledger/{intuneDeviceId}[/reset]` per ispezionare/resettare il ledger. Defense-in-depth banking-grade: (1) function key, (2) kill-switch `Idempotency:AdminApiEnabled` (off di default), (3) **mTLS richiesto** (nessun `clientCertExclusionPaths`), (4) **allow-list operatore** via `Idempotency:AdminCertThumbprints`. L'attore audit è il thumbprint del certificato verificato, non un campo del body. |
 | 7 | **User-Assigned Managed Identities** | — | `idactions-uami-web` (no Graph privilegiato), `idactions-uami` (worker/proc, poller), `idactions-uami-wipe`, `idactions-uami-autopilot`, `idactions-uami-bitlocker`, `idactions-uami-rename` (una per capability, ciascuna con i soli consent Graph necessari per la propria action). |
 | 8 | **Azure App Configuration** | tutte | Store centralizzato delle impostazioni con refresh sentinel; ogni app lo legge via `AppConfigRefreshMiddleware` con `roleHint` (`web`/`proc`/`wipe`). |
 | 9 | **Application Insights + tabella `auditevents`** | tutte | Audit dual-write: `customEvents` (non-sampled) + Azure Table durabile, entrambi con `correlationId`. |
@@ -453,12 +453,30 @@ la richiesta, l'`actionType` è opaco al chiamante. Stessi requisiti di auth di
 proprio esito. Esiti possibili: `404` (nessuna riga), `401` (cert/binding),
 `403` (riga di un altro device).
 
-### `GET` / `POST /api/action-ledger/{intuneDeviceId}[/reset]`
+### `GET` / `POST /api/actions/ledger/{intuneDeviceId}[/reset]`
 
 Endpoint operativi SecOps per ispezionare e resettare manualmente il ledger di
-idempotenza (sblocco di un device quando un re-wipe è intenzionalmente bloccato).
-Solo sulla `Web` Function App, protetti da function key e disabilitati di default
-(`Idempotency:AdminApiEnabled=true` per abilitarli).
+idempotenza (sblocco di un device quando un re-issue è intenzionalmente bloccato).
+Solo sulla `Web` Function App. Defense-in-depth banking-grade:
+
+1. **Function key** sul route HTTP;
+2. **Kill-switch** `Idempotency:AdminApiEnabled=true` (off di default);
+3. **mTLS richiesto** — il piano App Service ha `clientCertMode=Required` e
+   **nessun** `clientCertExclusionPaths`, quindi anche l'admin surface riceve
+   l'handshake del certificato client;
+4. **Allow-list operatore** — il thumbprint del leaf certificato del chiamante
+   deve essere in `Idempotency:AdminCertThumbprints` (CSV). Trust list
+   distinta da `ClientCert:AllowedLeafThumbprints` (che pin-a i cert dei
+   device), così a SecOps si può rilasciare un cert dedicato
+   (smartcard/HSM-backed) senza dare ad ogni device cert il potere di reset.
+
+Il campo `actor` dell'audit è vincolato al thumbprint del certificato
+**verificato** (non al campo `actor` del body) — l'eventuale `actor` JSON è
+conservato come `actorClaimed` solo per contesto operatore, accanto
+all'identità anchored crittograficamente. Una function key trapelata **non**
+può quindi più impersonare un admin nel trail non-ripudiabile.
+
+Body POST: `{ "reason": "free-text mandatory", "actor": "alice@bank.com (optional context)" }`.
 
 ## Configurazione
 
@@ -516,7 +534,8 @@ essere override come app settings della singola Function App.
 | `Wipe__KeepEnrollmentData` | `false` | Mantiene enrollment Intune (utile in DEV per evitare provisioning Autopilot da zero) |
 | `Wipe__KeepUserData` | `false` | Mantiene dati utente |
 | `ActionStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc) |
-| `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `action-ledger` admin (solo Web) |
+| `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `actions/ledger` admin (solo Web) |
+| `Idempotency__AdminCertThumbprints` | _(vuoto = fail-closed)_ | CSV/`\|`/`;`-separated SHA-1 thumbprint dei certificati operatore autorizzati a chiamare `actions/ledger/*`. Vuoto significa "nessun admin abilitato" → ogni chiamata risponde 403. Usare un set di cert dedicati (smartcard/HSM-backed), **distinto** dai cert device. |
 | `WipeRunbook__WebhookUrl` | _(vuoto)_ | **Deprecato** — usato dal vecchio `WipeRunbookForwardingRunner` per la sola capability `wipe-runbook`. Preferire `RunbookBridge:Routes:wipe-runbook` (vedi sotto). |
 | `RunbookBridge:Routes:<actionType>` | _(vuoto)_ | **Meccanismo plug-in** per collegare una runbook al dispatcher. Esempio: `RunbookBridge:Routes:lock-runbook = https://<webhook>`. Una chiave per ciascuna capability runbook. Trattare come secret (Key Vault reference raccomandato). Cambia richiede restart del Proc app. |
 | `BitLocker__AllowedGroupId` | _(default = `Wipe__AllowedGroupId`)_ | ObjectId gruppo Entra autorizzato alla rotazione recovery key (capability `bitlocker-rotate`) |

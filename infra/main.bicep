@@ -497,7 +497,13 @@ resource funcWeb 'Microsoft.Web/sites@2023-12-01' = {
     httpsOnly: true
     clientCertEnabled: true
     clientCertMode: 'Required'
-    clientCertExclusionPaths: '/api/actions/ledger'
+    // SECURITY: no clientCertExclusionPaths — every route (including the
+    // operator-only /api/actions/ledger admin surface) must present a valid
+    // client certificate. The admin surface additionally requires the caller
+    // thumbprint to be in Idempotency:AdminCertThumbprints (see
+    // ActionLedgerAdminFunction). The previous configuration excluded the
+    // ledger path from mTLS, leaving function-key-only auth on a destructive
+    // surface — fixed for banking-grade compliance (separation of duties).
     keyVaultReferenceIdentity: uamiWeb.id
     // VNet integration (Option B). web-subnet is delegated to
     // Microsoft.Web/serverFarms. vnetRouteAllEnabled=false keeps Internet

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "4072920560320914210"
+      "templateHash": "8351108783174605802"
     }
   },
   "parameters": {
@@ -793,7 +793,6 @@
         "httpsOnly": true,
         "clientCertEnabled": true,
         "clientCertMode": "Required",
-        "clientCertExclusionPaths": "/api/actions/ledger",
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('uamiWebName'))]",
         "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webSubnetName'))]",
         "vnetRouteAllEnabled": false,
