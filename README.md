@@ -665,6 +665,11 @@ customEvents
 └── docs/
     ├── architecture.png
     ├── architectural-improvements.md
+    ├── capabilities-autopilot-bitlocker.md
+    ├── cost-analysis-vnet-vs-public.md
+    ├── howto-new-capability-function.md
+    ├── howto-new-capability-runbook.md
+    ├── security-compliance-banking.md   # inventario controlli + mappatura PCI-DSS/ISO 27001/EBA/DORA/Banca d'Italia 285/13
     ├── dialog-screenshot.png
     ├── Capture-DialogScreenshot.ps1
     └── Presentazione-Soluzione-Intune-Self-Wipe.eml
@@ -696,6 +701,11 @@ customEvents
 
 > Dettaglio completo delle proposte architetturali in
 > [`docs/architectural-improvements.md`](docs/architectural-improvements.md).
+>
+> Inventario controlli di sicurezza con mappatura ai framework bancari
+> (PCI-DSS v4.0, ISO 27001:2022, EBA/GL/2019/04, DORA, Banca d'Italia 285/13,
+> NIS2, GDPR) in
+> [`docs/security-compliance-banking.md`](docs/security-compliance-banking.md).
 
 ## Licenza
 
