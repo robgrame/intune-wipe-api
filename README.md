@@ -670,6 +670,8 @@ customEvents
     ├── howto-new-capability-function.md
     ├── howto-new-capability-runbook.md
     ├── security-compliance-banking.md   # inventario controlli + mappatura PCI-DSS/ISO 27001/EBA/DORA/Banca d'Italia 285/13
+    ├── security-gaps-pending.md         # cosa manca / normativa / costo infra (vista sintetica per stakeholder)
+    ├── security-remediation-roadmap.md  # sizing effort + phasing 3 sprint per chiudere i gap
     ├── dialog-screenshot.png
     ├── Capture-DialogScreenshot.ps1
     └── Presentazione-Soluzione-Intune-Self-Wipe.eml
@@ -710,6 +712,10 @@ customEvents
 > **Roadmap di remediation** per chiudere i 10 gap banking-grade (sizing
 > effort + costi infra + decisioni cliente + phasing 3 sprint) in
 > [`docs/security-remediation-roadmap.md`](docs/security-remediation-roadmap.md).
+>
+> Vista **sintetica per stakeholder** (cosa manca / normativa / costo infra,
+> senza effort né phasing) in
+> [`docs/security-gaps-pending.md`](docs/security-gaps-pending.md).
 
 ## Licenza
 
