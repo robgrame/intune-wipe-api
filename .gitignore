@@ -24,3 +24,6 @@ artifact.zip
 client/tests/smoke-pki/
 
 artifacts/
+
+# IntuneWipeClient icon build scratch
+client/intune-win32-package/tools/build/
