@@ -181,7 +181,7 @@ var aiName   = toLower('${namePrefix}-ai${sep}${suffix}')
 var lawName  = toLower('${namePrefix}-law${sep}${suffix}')
 
 var uamiName     = toLower('${namePrefix}-uami${sep}${suffix}')      // dispatcher (no Graph)
-var uamiWebName  = toLower('${namePrefix}-uami-web${sep}${suffix}')   // public web (no Graph)
+var uamiWebName  = toLower('${namePrefix}-uami-web${sep}${suffix}')   // public web (Graph: Device.Read.All only, for DeviceDirectoryResolver SAN-DNS -> Entra deviceId binding)
 var uamiWipeName = toLower('${namePrefix}-uami-wipe${sep}${suffix}')  // privileged Graph
 var uamiAutopilotName = toLower('${namePrefix}-uami-autopilot${sep}${suffix}')  // privileged Graph (Autopilot import)
 var uamiBitLockerName = toLower('${namePrefix}-uami-bitlocker${sep}${suffix}')  // privileged Graph (BitLocker rotate)

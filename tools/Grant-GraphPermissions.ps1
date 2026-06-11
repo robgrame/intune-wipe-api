@@ -15,6 +15,15 @@
       - uamiBitLocker (privileged): DeviceManagementManagedDevices.PrivilegedOperations.All,
                                 DeviceManagementManagedDevices.Read.All,
                                 Device.Read.All, GroupMember.Read.All
+      - uamiWeb   (public web)  : Device.Read.All
+                                  (used by DeviceDirectoryResolver to resolve
+                                   client-cert SAN DNS / Subject CN -> Entra
+                                   deviceId via Microsoft Graph when the cert
+                                   does not embed the GUID directly. Without
+                                   this grant, mTLS clients with on-prem PKI
+                                   certs are rejected with 401 "client
+                                   certificate is missing the configured
+                                   device-id binding claim".)
       - uami      (status poller): DeviceManagementManagedDevices.Read.All
 
     Idempotent: existing assignments are detected via 409/duplicate and skipped.
@@ -75,6 +84,11 @@ $assignments = @{
         # Entra displayName collision pre-check (devices?$filter=displayName eq ...)
         'Device.Read.All'
     )
+    'uamiWeb'  = @(
+        # DeviceDirectoryResolver resolves client-cert SAN DNS / Subject CN to
+        # Entra deviceId for the cert<->device IDOR binding gate. Read-only.
+        'Device.Read.All'
+    )
     'uami'     = @(
         'DeviceManagementManagedDevices.Read.All'
     )
@@ -86,6 +100,7 @@ $uamiResourceNames = @{
     'uamiAutopilot' = "$NamePrefix-uami-autopilot-*"
     'uamiBitLocker' = "$NamePrefix-uami-bitlocker-*"
     'uamiRename'    = "$NamePrefix-uami-rename-*"
+    'uamiWeb'       = "$NamePrefix-uami-web-*"
     'uami'          = "$NamePrefix-uami-*"   # filtered to exclude -wipe-/-web-/-autopilot-/-bitlocker-/-rename-
 }
 
@@ -111,21 +126,25 @@ $uamiWipe = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-wipe-*" }
 $uamiAutopilot = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-autopilot-*" } | Select-Object -First 1
 $uamiBitLocker = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-bitlocker-*" } | Select-Object -First 1
 $uamiRename    = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-rename-*" } | Select-Object -First 1
+$uamiWeb       = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-web-*" } | Select-Object -First 1
 $uamiPoll = $allUamis | Where-Object { $_.name -like "$NamePrefix-uami-*" -and $_.name -notlike "$NamePrefix-uami-wipe-*" -and $_.name -notlike "$NamePrefix-uami-web-*" -and $_.name -notlike "$NamePrefix-uami-autopilot-*" -and $_.name -notlike "$NamePrefix-uami-bitlocker-*" -and $_.name -notlike "$NamePrefix-uami-rename-*" } | Select-Object -First 1
 if (-not $uamiWipe) { throw "uamiWipe not found (pattern $NamePrefix-uami-wipe-*)" }
 if (-not $uamiAutopilot) { throw "uamiAutopilot not found (pattern $NamePrefix-uami-autopilot-*)" }
 if (-not $uamiBitLocker) { throw "uamiBitLocker not found (pattern $NamePrefix-uami-bitlocker-*)" }
-if (-not $uamiRename)    { Write-Warn2 "uamiRename not found (pattern $NamePrefix-uami-rename-*) — skipping rename role grants (deploy with current bicep to create it)" }
+if (-not $uamiRename)    { Write-Warn2 "uamiRename not found (pattern $NamePrefix-uami-rename-*) - skipping rename role grants (deploy with current bicep to create it)" }
+if (-not $uamiWeb)       { Write-Warn2 "uamiWeb not found (pattern $NamePrefix-uami-web-*) - skipping DeviceDirectoryResolver grant; mTLS cert<->device binding via SAN DNS lookup will fail-closed." }
 if (-not $uamiPoll) { throw "uami (status poller) not found (pattern $NamePrefix-uami-* excluding -wipe-/-web-/-autopilot-/-bitlocker-/-rename-)" }
 $uamiByLogical['uamiWipe'] = $uamiWipe
 $uamiByLogical['uamiAutopilot'] = $uamiAutopilot
 $uamiByLogical['uamiBitLocker'] = $uamiBitLocker
 if ($uamiRename) { $uamiByLogical['uamiRename'] = $uamiRename }
+if ($uamiWeb)    { $uamiByLogical['uamiWeb']    = $uamiWeb }
 $uamiByLogical['uami']     = $uamiPoll
 Write-Ok "uamiWipe      -> $($uamiWipe.name)  (principalId $($uamiWipe.principalId))"
 Write-Ok "uamiAutopilot -> $($uamiAutopilot.name)  (principalId $($uamiAutopilot.principalId))"
 Write-Ok "uamiBitLocker -> $($uamiBitLocker.name)  (principalId $($uamiBitLocker.principalId))"
 if ($uamiRename) { Write-Ok "uamiRename    -> $($uamiRename.name)  (principalId $($uamiRename.principalId))" }
+if ($uamiWeb)    { Write-Ok "uamiWeb       -> $($uamiWeb.name)  (principalId $($uamiWeb.principalId))" }
 Write-Ok "uami          -> $($uamiPoll.name)  (principalId $($uamiPoll.principalId))"
 
 $totalGranted = 0
