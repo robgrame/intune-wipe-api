@@ -81,6 +81,15 @@ try {
         Write-Host "  Copied $f"
     }
 
+    # --- Copy assets (icon set) ---------------------------------------------
+    $assetsSrc = Join-Path $PSScriptRoot 'assets'
+    $assetsDst = Join-Path $InstallDir 'assets'
+    if (Test-Path $assetsSrc) {
+        New-Item -ItemType Directory -Force -Path $assetsDst | Out-Null
+        Copy-Item -Path (Join-Path $assetsSrc '*') -Destination $assetsDst -Force -Recurse
+        Write-Host "  Copied assets/ ($((Get-ChildItem $assetsDst -File | Measure-Object).Count) file(s))"
+    }
+
     # --- Persist config (ACL: SYSTEM + Administrators only) -----------------
     $cfg = [pscustomobject]@{
         ApiUrl                 = $ApiUrl
@@ -108,9 +117,12 @@ try {
     Write-Host "  Wrote config.json (restricted ACL)"
 
     # --- Shortcuts (Start Menu + Public Desktop, All Users) -----------------
-    # Use a "speaking" icon: imageres.dll,229 = the "Reset this PC" icon on
-    # Windows 10/11. Falls back gracefully if the icon index isn't present.
-    $iconLocation   = "$env:WINDIR\System32\imageres.dll,229"
+    # Prefer the custom branded icon shipped in <InstallDir>\assets\, fall
+    # back to imageres.dll,229 (the Windows 10/11 "Reset this PC" icon) so
+    # the shortcut never ends up with the generic PowerShell icon if the
+    # asset is missing.
+    $customIco      = Join-Path $InstallDir 'assets\IntuneWipeClient.ico'
+    $iconLocation   = if (Test-Path $customIco) { "$customIco,0" } else { "$env:WINDIR\System32\imageres.dll,229" }
     $shortcutTarget = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $shortcutArgs   = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstallDir\Launch-Wipe.ps1`""
     $shortcutDesc   = "Esegue il reset aziendale di questo dispositivo (richiede conferma)."
