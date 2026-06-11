@@ -114,6 +114,171 @@ try {
     }
     # ------------------------------------------------------------------------
 
+    # ---- New live-progress confirmation flow ------------------------------
+    # Single dialog that:
+    #   1) collects the typed "WIPE" confirmation (phase 1)
+    #   2) on confirm, transitions to a progress panel and walks the user
+    #      through trigger-task -> wait -> read-result -> outcome IN-PLACE
+    #      so there's no ~2-minute UX gap between "click Esegui" and the
+    #      live status dialog opening.
+    # Falls back to the legacy modal+poll flow if the new helper isn't
+    # present (older client build still on disk after a partial upgrade).
+    if (Get-Command Show-WipeConfirmationLive -ErrorAction SilentlyContinue) {
+        $script:exitCode = 1
+
+        $onExecute = {
+            param($form)
+
+            Add-WipeFormLog -Form $form -Message ("Dispositivo : {0}" -f $deviceName)        -Kind muted
+            Add-WipeFormLog -Form $form -Message ("EntraDevId  : {0}" -f $entraId)           -Kind muted
+            if ($intuneId) { Add-WipeFormLog -Form $form -Message ("IntuneDevId : {0}" -f $intuneId) -Kind muted }
+
+            # Wipe previous result so we know the next one is fresh.
+            if (Test-Path $ResultPath) { Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue }
+
+            Set-WipeFormStatus -Form $form -Text 'Avvio task amministrativo (SYSTEM)...'
+            Add-WipeFormLog -Form $form -Message ("Triggering scheduled task: {0}" -f $TaskFull)
+            $triggerError = $null
+            try {
+                Start-ScheduledTask -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe' -ErrorAction Stop
+                Add-WipeFormLog -Form $form -Message 'Task avviato.' -Kind success
+            } catch {
+                $triggerError = $_.Exception.Message
+                Add-WipeFormLog -Form $form -Message ("Start-ScheduledTask fallito ({0}); fallback su schtasks.exe..." -f $triggerError) -Kind warning
+                & schtasks.exe /Run /TN $TaskFull | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Add-WipeFormLog -Form $form -Message ("schtasks /Run uscito con codice {0}" -f $LASTEXITCODE) -Kind error
+                    Complete-WipeForm -Form $form -Success $false -FinalStatus 'Impossibile avviare il task amministrativo.'
+                    $script:exitCode = 1
+                    return
+                }
+                Add-WipeFormLog -Form $form -Message 'Task avviato via schtasks.exe.' -Kind success
+                $triggerError = $null
+            }
+
+            Set-WipeFormStatus -Form $form -Text 'Esecuzione comando di reset (chiamata API)...'
+            Add-WipeFormLog -Form $form -Message 'Attendo il completamento del task (max 2 minuti)...'
+            $deadline = (Get-Date).AddMinutes(2)
+            $state = 'Unknown'
+            $lastReported = 'Unknown'
+            do {
+                Start-Sleep -Seconds 2
+                [System.Windows.Forms.Application]::DoEvents()
+                $info = $null
+                try { $info = Get-ScheduledTask -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe' -ErrorAction Stop } catch { }
+                $state = if ($info) { $info.State } else { 'Unknown' }
+                if ($state -ne $lastReported) {
+                    Add-WipeFormLog -Form $form -Message ("Stato task: {0}" -f $state) -Kind muted
+                    $lastReported = $state
+                }
+            } while ($state -eq 'Running' -and (Get-Date) -lt $deadline)
+            $lastTaskResult = $null
+            try { $lastTaskResult = (Get-ScheduledTaskInfo -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe').LastTaskResult } catch { }
+            Add-WipeFormLog -Form $form -Message ("Task terminato (LastTaskResult = {0})" -f $lastTaskResult) -Kind muted
+
+            # Read result file (written by Invoke-WipeFromTask.ps1).
+            Set-WipeFormStatus -Form $form -Text 'Lettura risultato...'
+            $result = $null
+            $resultParseError = $null
+            if (Test-Path $ResultPath) {
+                try { $result = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json } catch { $resultParseError = $_.Exception.Message }
+            }
+
+            # Persist launcher observation breadcrumb (same as before).
+            try {
+                $breadcrumb = [ordered]@{
+                    ts                 = (Get-Date).ToUniversalTime().ToString('o')
+                    userName           = "$env:USERDOMAIN\$env:USERNAME"
+                    deviceName         = $env:COMPUTERNAME
+                    taskFullName       = $TaskFull
+                    triggerError       = $triggerError
+                    finalTaskState     = $state
+                    lastTaskResult     = $lastTaskResult
+                    resultFileExists   = (Test-Path $ResultPath)
+                    resultFileParseError = $resultParseError
+                    resultPayload      = $result
+                }
+                $breadcrumbPath = Join-Path $UserLogDir 'launcher-observation.json'
+                ([pscustomobject]$breadcrumb) | ConvertTo-Json -Depth 6 |
+                    Set-Content -LiteralPath $breadcrumbPath -Encoding utf8
+            } catch {
+                Add-WipeFormLog -Form $form -Message ("WARN: impossibile scrivere il breadcrumb: {0}" -f $_.Exception.Message) -Kind warning
+            }
+
+            if ($state -eq 'Running') {
+                Add-WipeFormLog -Form $form -Message 'Il task amministrativo è ancora in esecuzione oltre il timeout UI (2 min).' -Kind warning
+                Add-WipeFormLog -Form $form -Message 'Riapri il launcher tra qualche minuto per leggere il risultato finale.' -Kind muted
+                Complete-WipeForm -Form $form -Success $false -FinalStatus 'Esito non disponibile entro 2 minuti.'
+                $script:exitCode = 2
+                return
+            }
+
+            if ($result -and $result.status -eq 'ok') {
+                $corr = if ($result.correlationId) { [string]$result.correlationId } else { '' }
+                $msg  = if ($result.message)       { [string]$result.message }       else { '' }
+                Add-WipeFormLog -Form $form -Message 'Richiesta accettata dal server.' -Kind success
+                if ($corr) {
+                    Set-WipeFormCorrelationId -Form $form -CorrelationId $corr
+                    Add-WipeFormLog -Form $form -Message ("CorrelationId : {0}" -f $corr) -Kind success
+                }
+                if ($msg) { Add-WipeFormLog -Form $form -Message ("Server message : {0}" -f $msg) -Kind muted }
+                Add-WipeFormLog -Form $form -Message 'Intune prenderà in carico il comando entro pochi minuti.' -Kind muted
+                Add-WipeFormLog -Form $form -Message 'Usa "Monitora avanzamento live" per seguire gli stati riportati da Intune.' -Kind muted
+
+                $openLive = $null
+                if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {
+                    $openLive = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName }.GetNewClosure()
+                }
+                Complete-WipeForm -Form $form -Success $true `
+                    -FinalStatus 'Reset richiesto. In attesa di presa in carico da Intune.' `
+                    -OnOpenLiveProgress $openLive
+                $script:exitCode = 0
+                return
+            }
+
+            if ($result -and $result.status -eq 'error') {
+                $corr  = if ($result.correlationId) { [string]$result.correlationId } else { '' }
+                $msg   = if ($result.message)       { [string]$result.message }       else { 'Errore non specificato dal server.' }
+                $kind  = if ($result.kind)          { [string]$result.kind }          else { '' }
+                $http  = if ($result.httpStatusCode){ [string]$result.httpStatusCode } else { '' }
+                Add-WipeFormLog -Form $form -Message 'Richiesta FALLITA.' -Kind error
+                if ($http) { Add-WipeFormLog -Form $form -Message ("HTTP : {0}" -f $http) -Kind error }
+                if ($kind) { Add-WipeFormLog -Form $form -Message ("Kind : {0}" -f $kind) -Kind muted }
+                Add-WipeFormLog -Form $form -Message ("Message : {0}" -f $msg) -Kind error
+                if ($corr) {
+                    Set-WipeFormCorrelationId -Form $form -CorrelationId $corr
+                    Add-WipeFormLog -Form $form -Message ("CorrelationId : {0}" -f $corr) -Kind muted
+                }
+                Complete-WipeForm -Form $form -Success $false -FinalStatus 'Richiesta di reset rifiutata dal server.'
+                $script:exitCode = 1
+                return
+            }
+
+            # No result / unparseable result.
+            $hint = if ($resultParseError) { ("Risultato non leggibile: {0}" -f $resultParseError) } else { 'Nessun file di risultato prodotto dal task SYSTEM.' }
+            Add-WipeFormLog -Form $form -Message $hint -Kind error
+            Add-WipeFormLog -Form $form -Message 'Controlla i log in %ProgramData%\IntuneWipeClient\Logs.' -Kind muted
+            Complete-WipeForm -Form $form -Success $false -FinalStatus 'Esito sconosciuto.'
+            $script:exitCode = 2
+        }.GetNewClosure()
+
+        $openLiveFromConfirm = $null
+        if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {
+            $openLiveFromConfirm = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName }.GetNewClosure()
+        }
+
+        $confirmed = Show-WipeConfirmationLive `
+            -DeviceName $deviceName -EntraDeviceId $entraId -IntuneDeviceId $intuneId `
+            -OnExecute $onExecute -OnOpenLiveProgress $openLiveFromConfirm
+
+        if (-not $confirmed) {
+            Write-Host 'Operazione annullata dall''utente.' -ForegroundColor Yellow
+            exit 0
+        }
+        exit $script:exitCode
+    }
+
+    # ---- Legacy flow (fallback when Show-WipeConfirmationLive is missing) ---
     $confirmed = Show-WipeConfirmation -DeviceName $deviceName -EntraDeviceId $entraId -IntuneDeviceId $intuneId
     if (-not $confirmed) {
         Write-Host 'Operazione annullata dall''utente.' -ForegroundColor Yellow
