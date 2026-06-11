@@ -12,7 +12,7 @@
 #>
 
 $ErrorActionPreference = 'SilentlyContinue'
-$ExpectedVersion = '1.0.16'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
+$ExpectedVersion = '1.0.17'  # __VERSION_PLACEHOLDER__  (rewritten by Build-IntuneWinPackage.ps1)
 $RegPath         = 'HKLM:\SOFTWARE\MSLABS\IntuneWipeClient'
 $RegSubKey       = 'SOFTWARE\MSLABS\IntuneWipeClient'
 $ProgramFiles64  = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
@@ -37,6 +37,7 @@ if ($installed -eq $ExpectedVersion -and (Test-Path $Marker)) {
 }
 
 exit 0  # exit 0 with NO output => Not detected (Intune contract)
+
 
 
 

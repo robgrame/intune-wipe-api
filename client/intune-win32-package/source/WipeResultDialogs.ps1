@@ -344,10 +344,11 @@ function Show-WipeUnknownDialog {
             $headerColor = [System.Drawing.Color]::FromArgb(176, 122, 0)
         }
         default {
-            $titleText = "Stato dell'operazione non disponibile"
+            $titleText = "Stato non disponibile (v1.0.17)"
             $bodyText  = (
-                "La richiesta $($e_grave) stata avviata ma il risultato non $($e_grave) ancora disponibile.`r`n`r`n" +
-                "Riprova fra qualche minuto. Se il problema persiste, contatta l'IT helpdesk e fornisci il contenuto della cartella di log:`r`n$LogPath"
+                "La richiesta $($e_grave) stata avviata ma il task SYSTEM $($e_grave) terminato senza scrivere un risultato.`r`n`r`n" +
+                "Questo $($e_grave) un caso anomalo (non dovrebbe pi$($e_grave) accadere da v1.0.16). Probabili cause: AppLocker/WDAC blocca powershell.exe come SYSTEM, oppure il file 'C:\Program Files\IntuneWipeClient\Invoke-WipeFromTask.ps1' $($e_grave) stato manomesso.`r`n`r`n" +
+                "Contatta l'IT helpdesk e fornisci il contenuto della cartella di log:`r`n$LogPath"
             )
             $headerColor = [System.Drawing.Color]::FromArgb(176, 122, 0)
         }

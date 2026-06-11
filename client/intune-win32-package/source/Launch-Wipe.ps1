@@ -78,29 +78,60 @@ try {
     if (Test-Path $ResultPath) { Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue }
 
     Write-Host "Triggering scheduled task: $TaskFull"
+    $triggerError = $null
     try {
         Start-ScheduledTask -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe' -ErrorAction Stop
     } catch {
         # Fallback to schtasks.exe if Start-ScheduledTask is unavailable.
+        $triggerError = $_.Exception.Message
         & schtasks.exe /Run /TN $TaskFull | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (exit $LASTEXITCODE)" }
+        if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (exit $LASTEXITCODE). First error: $triggerError" }
+        $triggerError = $null
     }
 
     # Wait up to 2 minutes for the task to finish (state returns to 'Ready').
     $deadline = (Get-Date).AddMinutes(2)
     $state = 'Unknown'
+    $lastTaskResult = $null
     do {
         Start-Sleep -Seconds 2
         $info = $null
         try { $info = Get-ScheduledTask -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe' -ErrorAction Stop } catch { }
         $state = if ($info) { $info.State } else { 'Unknown' }
     } while ($state -eq 'Running' -and (Get-Date) -lt $deadline)
+    try { $lastTaskResult = (Get-ScheduledTaskInfo -TaskPath '\IntuneWipeClient\' -TaskName 'InvokeWipe').LastTaskResult } catch { }
 
     # Read result file (written by Invoke-WipeFromTask.ps1).
     $result = $null
     $resultParseError = $null
     if (Test-Path $ResultPath) {
         try { $result = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json } catch { $resultParseError = $_.Exception.Message }
+    }
+
+    # User-mode breadcrumb: persist what THIS launcher observed about the
+    # SYSTEM-task lifecycle in a location the SYSTEM script does not touch.
+    # This gives ground truth even if the SYSTEM script never executed (e.g.
+    # AppLocker/WDAC blocked powershell.exe, .ps1 file missing, etc.) — IT
+    # helpdesk can read this file from the user's profile to see whether the
+    # task was triggered, the final state and the LastTaskResult.
+    try {
+        $breadcrumb = [ordered]@{
+            ts                 = (Get-Date).ToUniversalTime().ToString('o')
+            userName           = "$env:USERDOMAIN\$env:USERNAME"
+            deviceName         = $env:COMPUTERNAME
+            taskFullName       = $TaskFull
+            triggerError       = $triggerError
+            finalTaskState     = $state
+            lastTaskResult     = $lastTaskResult
+            resultFileExists   = (Test-Path $ResultPath)
+            resultFileParseError = $resultParseError
+            resultPayload      = $result
+        }
+        $breadcrumbPath = Join-Path $UserLogDir 'launcher-observation.json'
+        ([pscustomobject]$breadcrumb) | ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath $breadcrumbPath -Encoding utf8
+    } catch {
+        Write-Host "WARN: could not write launcher observation breadcrumb: $($_.Exception.Message)"
     }
 
     # If the SYSTEM task is still running at deadline, prefer the in-progress
