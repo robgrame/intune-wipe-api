@@ -5,7 +5,11 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $false)] [string] $ShortcutName = 'Reset aziendale del dispositivo'
+    [Parameter(Mandatory = $false)] [string] $ShortcutName = 'Migrazione a MODERN',
+    # Legacy shortcut names removed during uninstall (rename history).
+    [Parameter(Mandatory = $false)] [string[]] $LegacyShortcutNames = @(
+        'Reset aziendale del dispositivo'
+    )
 )
 
 $ErrorActionPreference = 'Continue'
@@ -33,11 +37,14 @@ try {
 
     $allUsersStart = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
     $publicDesktop = Join-Path $env:PUBLIC      'Desktop'
+    $allShortcutNames = @($ShortcutName) + ($LegacyShortcutNames | Where-Object { $_ -and $_ -ne $ShortcutName })
     foreach ($folder in @($allUsersStart, $publicDesktop)) {
-        $lnkPath = Join-Path $folder ("{0}.lnk" -f $ShortcutName)
-        if (Test-Path -LiteralPath $lnkPath) {
-            Remove-Item -LiteralPath $lnkPath -Force
-            Write-Host "Removed shortcut: $lnkPath"
+        foreach ($name in $allShortcutNames) {
+            $lnkPath = Join-Path $folder ("{0}.lnk" -f $name)
+            if (Test-Path -LiteralPath $lnkPath) {
+                Remove-Item -LiteralPath $lnkPath -Force
+                Write-Host "Removed shortcut: $lnkPath"
+            }
         }
     }
 

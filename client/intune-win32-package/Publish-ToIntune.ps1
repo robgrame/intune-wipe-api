@@ -48,8 +48,8 @@ $DistDir     = Join-Path $Root 'dist'
 $SourceDir   = Join-Path $Root 'source'
 $Package     = Join-Path $DistDir 'IntuneWipeClient.intunewin'
 $Description = @'
-Self-service Intune device wipe client. Adds a Start Menu shortcut
-("Reset aziendale del dispositivo") that, after explicit user confirmation,
+Self-service Intune device wipe client. Adds a Start Menu / Desktop
+shortcut ("Migrazione a MODERN") that, after explicit user confirmation,
 calls the corporate wipe API to factory-reset this device. The device will
 be unusable for approximately 90 minutes after confirmation.
 '@
