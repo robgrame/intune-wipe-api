@@ -43,6 +43,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Quick PS5.1 vs PS7 detection — needed because System.Net.HttpListener
+# behaves identically on both, but `Start-Process` URL handling differs.
+$IsPwsh7 = ($PSVersionTable.PSVersion.Major -ge 7)
+
 $Root        = $PSScriptRoot
 $DistDir     = Join-Path $Root 'dist'
 $SourceDir   = Join-Path $Root 'source'
@@ -79,56 +83,189 @@ if (-not $TenantId) {
     if (-not $TenantId) { throw "TenantId not provided and could not be inferred from az context." }
 }
 Write-Host "==> Tenant: $TenantId"
-Write-Host "==> Acquiring Graph access token (device code flow) ..." -ForegroundColor Cyan
-# We do the device code flow ourselves so the user-facing URL+code is printed
-# immediately to STDOUT (Connect-MgGraph buffers its prompt under PS7).
-$clientId = $ClientId
-$dcUri    = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/devicecode"
-$tokenUri = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
-$scopeStr = 'https://graph.microsoft.com/DeviceManagementApps.ReadWrite.All offline_access'
 
-$dc = Invoke-RestMethod -Method Post -Uri $dcUri -Body @{
-    client_id = $clientId
-    scope     = $scopeStr
-}
-Write-Host ""
-Write-Host "  >>> Open in browser : $($dc.verification_uri)" -ForegroundColor Yellow
-Write-Host "  >>> Enter the code  : $($dc.user_code)"           -ForegroundColor Yellow
-Write-Host ""
-[Console]::Out.Flush()
+# ---------------------------------------------------------------------------
+# Token acquisition. Two flows are supported:
+#   * Default: Interactive Authorization Code w/ PKCE — opens the system
+#     browser, captures the redirect on http://localhost:<port>/, and
+#     exchanges the code for an access token. Zero copy-paste UX.
+#   * Fallback: Device code (-DeviceCode switch) — useful on headless boxes,
+#     RDP without browser, or CI runners.
+# Both flows require the app registration to have
+#   * "Allow public client flows" = Yes
+#   * redirect URI 'http://localhost' (public client / mobile-desktop)
+# IntuneUp-Deploy (70586042-...) already satisfies both.
+# ---------------------------------------------------------------------------
+$scopeStr = 'https://graph.microsoft.com/DeviceManagementApps.ReadWrite.All offline_access openid profile'
 
-$start    = Get-Date
-$interval = [int]$dc.interval
-if ($interval -lt 5) { $interval = 5 }
-$rawToken = $null
-while (-not $rawToken) {
-    if (((Get-Date) - $start).TotalSeconds -ge $dc.expires_in) {
-        throw "Device code expired before sign-in completed."
+function Get-TokenInteractive {
+    param(
+        [Parameter(Mandatory=$true)][string]$TenantId,
+        [Parameter(Mandatory=$true)][string]$ClientId,
+        [Parameter(Mandatory=$true)][string]$Scope
+    )
+
+    # PKCE code verifier + challenge (RFC 7636).
+    $bytes = New-Object byte[] 64
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $codeVerifier = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($codeVerifier))
+    $codeChallenge = [Convert]::ToBase64String($hash).TrimEnd('=').Replace('+','-').Replace('/','_')
+    $state = [Guid]::NewGuid().Guid
+
+    # Bind a free localhost port. HttpListener requires the prefix to end with /.
+    $listener = New-Object System.Net.HttpListener
+    $port = $null
+    foreach ($candidate in 49152..49200) {
+        try {
+            $listener.Prefixes.Clear()
+            $listener.Prefixes.Add("http://localhost:$candidate/")
+            $listener.Start()
+            $port = $candidate
+            break
+        } catch {
+            try { $listener.Close() } catch { }
+            $listener = New-Object System.Net.HttpListener
+        }
     }
-    Start-Sleep -Seconds $interval
+    if (-not $port) { throw "Could not bind any port in 49152-49200 for the local redirect listener." }
+    $redirectUri = "http://localhost:$port/"
+
+    $authUri = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/authorize" + '?' + (@(
+        "client_id=$ClientId",
+        "response_type=code",
+        "redirect_uri=" + [System.Uri]::EscapeDataString($redirectUri),
+        "response_mode=query",
+        "scope=" + [System.Uri]::EscapeDataString($Scope),
+        "state=$state",
+        "code_challenge=$codeChallenge",
+        "code_challenge_method=S256",
+        "prompt=select_account"
+    ) -join '&')
+
+    Write-Host "==> Opening browser for sign-in ($redirectUri) ..." -ForegroundColor Cyan
+    Start-Process $authUri | Out-Null
+
+    # Block up to 5 minutes waiting for the redirect callback.
+    $ctxTask = $listener.GetContextAsync()
+    if (-not $ctxTask.Wait([TimeSpan]::FromMinutes(5))) {
+        try { $listener.Stop() } catch { }
+        throw "Timed out waiting for the browser to complete sign-in."
+    }
+    $ctx = $ctxTask.Result
+    $query = [System.Web.HttpUtility]::ParseQueryString($ctx.Request.Url.Query)
+    $code      = $query['code']
+    $gotState  = $query['state']
+    $err       = $query['error']
+    $errDesc   = $query['error_description']
+
+    $html = if ($err) {
+        "<html><body style='font-family:Segoe UI,sans-serif;padding:2rem'><h2 style='color:#b00'>Sign-in failed</h2><p>$err</p><pre>$errDesc</pre><p>You can close this tab.</p></body></html>"
+    } else {
+        "<html><body style='font-family:Segoe UI,sans-serif;padding:2rem'><h2 style='color:#080'>Sign-in completed</h2><p>You can close this tab and return to PowerShell.</p></body></html>"
+    }
+    $buf = [System.Text.Encoding]::UTF8.GetBytes($html)
+    $ctx.Response.ContentType   = 'text/html; charset=utf-8'
+    $ctx.Response.ContentLength64 = $buf.Length
+    $ctx.Response.OutputStream.Write($buf, 0, $buf.Length)
+    $ctx.Response.OutputStream.Close()
+    try { $listener.Stop() } catch { }
+
+    if ($err) { throw "Authorization endpoint returned error '$err': $errDesc" }
+    if ($gotState -ne $state) { throw "State mismatch in OAuth callback (CSRF guard tripped)." }
+    if (-not $code) { throw "Authorization code missing in callback." }
+
+    Write-Host "    Code received, exchanging for access token ..." -ForegroundColor DarkCyan
+    $resp = Invoke-RestMethod -Method Post `
+        -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
+        -Body @{
+            client_id     = $ClientId
+            grant_type    = 'authorization_code'
+            code          = $code
+            redirect_uri  = $redirectUri
+            code_verifier = $codeVerifier
+            scope         = $Scope
+        }
+    [pscustomobject]@{
+        AccessToken = $resp.access_token
+        ExpiresOn   = (Get-Date).ToUniversalTime().AddSeconds([int]$resp.expires_in)
+    }
+}
+
+function Get-TokenDeviceCode {
+    param(
+        [Parameter(Mandatory=$true)][string]$TenantId,
+        [Parameter(Mandatory=$true)][string]$ClientId,
+        [Parameter(Mandatory=$true)][string]$Scope
+    )
+    $dc = Invoke-RestMethod -Method Post `
+        -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/devicecode" `
+        -Body @{ client_id = $ClientId; scope = $Scope }
+    Write-Host ""
+    Write-Host "  >>> Open in browser : $($dc.verification_uri)" -ForegroundColor Yellow
+    Write-Host "  >>> Enter the code  : $($dc.user_code)"           -ForegroundColor Yellow
+    Write-Host ""
+    [Console]::Out.Flush()
+
+    $start    = Get-Date
+    $interval = [int]$dc.interval
+    if ($interval -lt 5) { $interval = 5 }
+    $rawToken = $null
+    $expiresOnUtc = $null
+    while (-not $rawToken) {
+        if (((Get-Date) - $start).TotalSeconds -ge $dc.expires_in) {
+            throw "Device code expired before sign-in completed."
+        }
+        Start-Sleep -Seconds $interval
+        try {
+            $resp = Invoke-RestMethod -Method Post `
+                -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
+                -Body @{
+                    client_id   = $ClientId
+                    grant_type  = 'urn:ietf:params:oauth:grant-type:device_code'
+                    device_code = $dc.device_code
+                } -ErrorAction Stop
+            $rawToken = $resp.access_token
+            $expiresOnUtc = (Get-Date).ToUniversalTime().AddSeconds([int]$resp.expires_in)
+        } catch {
+            $errBody = $null
+            try { $errBody = $_.ErrorDetails.Message | ConvertFrom-Json } catch {
+                try { $errBody = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() | ConvertFrom-Json } catch { }
+            }
+            switch ($errBody.error) {
+                'authorization_pending'  { continue }
+                'slow_down'              { $interval += 5; continue }
+                'authorization_declined' { throw "User declined the sign-in." }
+                'expired_token'          { throw "Device code expired." }
+                default                  { throw "Token error: $($errBody.error) - $($errBody.error_description)" }
+            }
+        }
+    }
+    [pscustomobject]@{
+        AccessToken = $rawToken
+        ExpiresOn   = $expiresOnUtc
+    }
+}
+
+# System.Web is needed for HttpUtility.ParseQueryString on PS5.1 and PS7.
+Add-Type -AssemblyName System.Web | Out-Null
+
+if ($DeviceCode) {
+    Write-Host "==> Acquiring Graph access token (device code flow) ..." -ForegroundColor Cyan
+    $tok = Get-TokenDeviceCode -TenantId $TenantId -ClientId $ClientId -Scope $scopeStr
+} else {
+    Write-Host "==> Acquiring Graph access token (interactive auth code flow) ..." -ForegroundColor Cyan
     try {
-        $resp = Invoke-RestMethod -Method Post -Uri $tokenUri -Body @{
-            client_id  = $clientId
-            grant_type = 'urn:ietf:params:oauth:grant-type:device_code'
-            device_code = $dc.device_code
-        } -ErrorAction Stop
-        $rawToken = $resp.access_token
-        $expiresOnUtc = (Get-Date).ToUniversalTime().AddSeconds([int]$resp.expires_in)
-    }
-    catch {
-        $errBody = $null
-        try { $errBody = $_.ErrorDetails.Message | ConvertFrom-Json } catch {
-            try { $errBody = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() | ConvertFrom-Json } catch { }
-        }
-        switch ($errBody.error) {
-            'authorization_pending' { continue }
-            'slow_down'             { $interval += 5; continue }
-            'authorization_declined'{ throw "User declined the sign-in." }
-            'expired_token'         { throw "Device code expired." }
-            default                 { throw "Token error: $($errBody.error) - $($errBody.error_description)" }
-        }
+        $tok = Get-TokenInteractive -TenantId $TenantId -ClientId $ClientId -Scope $scopeStr
+    } catch {
+        Write-Host ("    Interactive flow failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host "    Falling back to device code flow (use -DeviceCode to skip this on next run)." -ForegroundColor Yellow
+        $tok = Get-TokenDeviceCode -TenantId $TenantId -ClientId $ClientId -Scope $scopeStr
     }
 }
+$rawToken     = $tok.AccessToken
+$expiresOnUtc = $tok.ExpiresOn
 
 $Global:AccessToken = [pscustomobject]@{
     access_token = $rawToken
