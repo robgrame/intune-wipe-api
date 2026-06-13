@@ -11,7 +11,8 @@ for distribution via Microsoft Intune as a Win32 LOB application.
 | `%ProgramFiles%\IntuneWipeClient\WipeConfirmationDialog.ps1` | Shared WinForms confirmation dialog. |
 | `%ProgramFiles%\IntuneWipeClient\Launch-Wipe.ps1` | Shortcut launcher: reads config + invokes the wipe script. |
 | `%ProgramFiles%\IntuneWipeClient\config.json` | API URL + function key (ACL = SYSTEM + Administrators only). |
-| `%ProgramData%\Microsoft\Windows\Start Menu\Programs\Reset aziendale del dispositivo.lnk` | All-users Start Menu shortcut. |
+| `%ProgramData%\Microsoft\Windows\Start Menu\Programs\Migrazione a MODERN.lnk` | All-users Start Menu shortcut. |
+| `%PUBLIC%\Desktop\Migrazione a MODERN.lnk` | Public Desktop shortcut (visible to every user). |
 | `HKLM:\SOFTWARE\MSLABS\IntuneWipeClient` | Detection registry key (`Version`, `ProductCode`, `InstallDir`). |
 
 ## Build

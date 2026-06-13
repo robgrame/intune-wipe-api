@@ -478,6 +478,96 @@ può quindi più impersonare un admin nel trail non-ripudiabile.
 
 Body POST: `{ "reason": "free-text mandatory", "actor": "alice@bank.com (optional context)" }`.
 
+### `GET /api/schedule/me`
+
+Endpoint **action-agnostic** che restituisce al device chiamante (mTLS +
+binding cert↔EntraDeviceId) la wave schedulata più imminente che lo
+riguarda, oppure `204 No Content` se non è membro di alcuna wave attiva.
+
+Il *core* (Web Function) non sa cosa sia una "wave wipe": espone solo il
+contratto generico `IScheduleProvider` (in `Shared`). Ogni capability che
+vuole far parte della schedulazione registra un proprio provider nel
+composition root del Web (`Program.cs`); l'aggregatore (`ScheduleAggregator`)
+unisce le risposte di tutti i provider e ritorna quella con
+`scheduledAtUtc` più vicino. Nuova capability ⇒ zero modifiche al core.
+
+Filtri opzionali: `?actionType=wipe` (limita alla capability indicata).
+
+Risposta 200:
+
+```json
+{
+  "waveId": "9c2c6f01-2b54-4d6f-8a4b-1b9d3b18b8d0",
+  "name": "Wipe ondata 3 - filiale Milano",
+  "actionType": "wipe",
+  "scheduledAtUtc": "2026-07-15T18:00:00+00:00",
+  "status": "scheduled",
+  "isImmediate": false,
+  "description": "Devices ceduti al magazzino",
+  "generatedAtUtc": "2026-07-10T09:42:01.123+00:00"
+}
+```
+
+**Doppio gate temporale** (defense-in-depth):
+
+- **Client-side** — un pacchetto Intune **Proactive Remediation**
+  in `client/intune-remediation-schedule/` polla periodicamente
+  `/api/schedule/me` (ogni 4h è il default raccomandato) e persiste lo
+  snapshot in `%ProgramData%\IntuneWipeClient\schedule.json`.
+  `Launch-Wipe.ps1` legge questo file prima di triggerare lo scheduled
+  task del wipe: se è presente una wave futura, mostra all'utente
+  "il wipe partirà alle 18:00" e non chiama l'API. Vedi il README
+  dedicato in `client/intune-remediation-schedule/README.md` per il
+  caricamento del pacchetto su Intune.
+- **Capability-side** — `WipeActionRunner.RunAsync` consulta lo store
+  `WipeScheduleStore` **prima** di chiamare Graph wipe: se il device è
+  in una wave la cui `ScheduledAtUtc` è ancora futura, l'azione viene
+  *deferita* (no Graph call, no ledger reservation, no status row) e
+  l'evento `action.schedule.gated` viene emesso. Garantisce che un client
+  manomesso o non aggiornato non possa anticipare il wipe.
+
+#### Schema dello storage (contratto Portal ↔ Wipe capability)
+
+Le wave vivono in due tabelle Azure sullo storage account del role Web
+(stesso account di `actionstatus`):
+
+| Tabella | PartitionKey | RowKey | Owner write | Owner read |
+|---|---|---|---|---|
+| `wipeschedulewaves`   | `WipeScheduleWave` (cost.) | `<waveId>` (GUID lower) | Portal | Portal + Wipe runner + Web (provider) |
+| `wipeschedulemembers` | `<waveId>` (GUID lower) | `<entraDeviceId>` (GUID lower) | Portal | Portal + Wipe runner + Web (provider) |
+
+Colonne wave: `ActionType` (sempre `wipe`), `Name`, `Description`,
+`ScheduledAtUtc`, `Status` (`draft|scheduled|executing|completed|canceled`),
+`CreatedBy`, `CreatedAtUtc`, `UpdatedAtUtc`. Colonne member: `DeviceName`,
+`IntuneDeviceId`, `AddedBy`, `AddedAtUtc`.
+
+I nomi di colonna sono il contratto tra il portale (write) e la
+capability wipe (read) — vanno rinominati in entrambi i repo
+contestualmente o si rompe il flusso.
+
+#### Role assignment richiesto (manual one-shot fino al prossimo deploy infra)
+
+Il portale (UAMI del web app) e il Web/Wipe role della Function App devono
+poter leggere/scrivere sulle due tabelle:
+
+```pwsh
+$webStorage = az storage account show -g rg-idactions-dev `
+  -n <idactionsstw...> --query id -o tsv
+$portalUami = az identity show -g rg-idactions-portal-dev `
+  -n <portal-uami-name> --query principalId -o tsv
+
+# Portal: write-side
+az role assignment create --assignee $portalUami `
+  --role 'Storage Table Data Contributor' --scope $webStorage
+
+# Wipe role UAMI (read-side, capability gate). Web role UAMI già ha
+# permessi sullo stesso storage per 'actionstatus' — verificare che il
+# ruolo sia almeno 'Storage Table Data Reader' o estenderlo a Contributor.
+$wipeUami = az identity show -g rg-idactions-dev -n <wipe-uami-name> --query principalId -o tsv
+az role assignment create --assignee $wipeUami `
+  --role 'Storage Table Data Reader' --scope $webStorage
+```
+
 ## Configurazione
 
 Tutte le impostazioni sono centralizzate in **Azure App Configuration** (lette

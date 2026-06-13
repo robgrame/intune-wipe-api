@@ -21,7 +21,11 @@ var host = new HostBuilder()
 
         // Wipe capability — wipe role hosts the privileged executor:
         //   AddWipeExecutor: GraphWipeService + WipeActionRunner (+ probe).
+        //   AddWipeScheduleStore: gives WipeActionRunner access to the
+        //     schedule tables so it can enforce capability-side temporal
+        //     gating (defense-in-depth alongside client-side gating).
         // The consumer function resolves WipeActionRunner directly (concrete type).
+        services.AddWipeScheduleStore();
         services.AddWipeExecutor();
     })
     .Build();

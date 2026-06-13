@@ -87,6 +87,17 @@ public static class AuditEvents
     // queue → WipeActionConsumerFunction on the wipe app).
     public const string ActionForwarded              = "action.forwarded";                // proc → per-capability queue
 
+    // ---- Schedule (capability-agnostic; emitted by Web /api/schedule/me) --
+    // The schedule subsystem is generic: capabilities register their own
+    // IScheduleProvider, the core endpoint just calls the aggregator.
+    // These events let SecOps observe who downloaded what schedule even
+    // though the underlying waves live in capability-owned storage.
+    public const string ScheduleQueried   = "action.schedule.queried";    // any successful 200/204
+    public const string ScheduleReturned  = "action.schedule.returned";   // 200 with a snapshot
+    public const string ScheduleEmpty     = "action.schedule.empty";      // 204 — no provider had a snapshot
+    public const string ScheduleGated     = "action.schedule.gated";      // runner deferred because wave not yet due
+    public const string ScheduleProviderError = "action.schedule.provider-error";
+
     /// <summary>
     /// Shared property keys (use these consistently so KQL is uniform).
     /// Capability-specific properties live in their own Prop type
@@ -155,5 +166,13 @@ public static class AuditEvents
         public const string AttemptNumber           = "attemptNumber";
         public const string MaxAttempts             = "maxAttempts";
         public const string BackoffMs               = "backoffMs";
+
+        // Schedule (capability-agnostic)
+        public const string ScheduleWaveId             = "scheduleWaveId";
+        public const string ScheduleWaveName           = "scheduleWaveName";
+        public const string ScheduleWaveStatus         = "scheduleWaveStatus";
+        public const string ScheduleScheduledAtUtc     = "scheduleScheduledAtUtc";
+        public const string ScheduleSecondsUntilFire   = "scheduleSecondsUntilFire";
+        public const string ScheduleProviderType       = "scheduleProviderType";
     }
 }

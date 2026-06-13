@@ -311,6 +311,20 @@ public static class HostBuilderExtensions
     }
 
     /// <summary>
+    /// Registers the capability-agnostic <see cref="ScheduleAggregator"/>.
+    /// Required by any host that exposes the <c>GET /api/schedule/me</c>
+    /// endpoint (currently Web only). The aggregator resolves every
+    /// <see cref="Schedule.IScheduleProvider"/> registered by capability
+    /// helpers (e.g. <c>AddWipeScheduleProvider</c>) and merges their
+    /// results — Web stays wipe-agnostic.
+    /// </summary>
+    public static IServiceCollection AddScheduleAggregator(this IServiceCollection services)
+    {
+        services.TryAddSingleton<ScheduleAggregator>();
+        return services;
+    }
+
+    /// <summary>
     /// Registers an OpenTelemetry <c>TracerProvider</c> wired to the Azure
     /// Monitor exporter. This is the layer that gives App Insights a single
     /// end-to-end trace across Web → Service Bus → Proc → Service Bus → Wipe.

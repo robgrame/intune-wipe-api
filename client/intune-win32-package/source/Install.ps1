@@ -23,7 +23,14 @@ param(
     [Parameter(Mandatory = $false)] [string] $CertificateSubjectLike,
     [Parameter(Mandatory = $false)] [string] $CertificateIssuerLike = '*MSLABS-SUBCA01*;*MSLABS-ADCS*',
     [Parameter(Mandatory = $false)] [string] $CertificateThumbprint,
-    [Parameter(Mandatory = $false)] [string] $ShortcutName = 'Reset aziendale del dispositivo'
+    [Parameter(Mandatory = $false)] [string] $ShortcutName = 'Migrazione a MODERN',
+    # Legacy shortcut names removed during install so that upgrades from older
+    # versions don't leave stale .lnk files alongside the renamed one. Keep
+    # appending past names here, never removing — Win32 upgrades only run
+    # Install.ps1 (Uninstall.ps1 is invoked on supersedence, not on upgrade).
+    [Parameter(Mandatory = $false)] [string[]] $LegacyShortcutNames = @(
+        'Reset aziendale del dispositivo'
+    )
 )
 
 $ErrorActionPreference = 'Stop'
@@ -133,6 +140,16 @@ try {
     foreach ($folder in @($allUsersStart, $publicDesktop)) {
         if (-not (Test-Path -LiteralPath $folder)) {
             New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        }
+        # Clean up legacy shortcut names (renames across versions) so the
+        # device ends up with a single, current shortcut after upgrade.
+        foreach ($legacy in $LegacyShortcutNames) {
+            if ([string]::IsNullOrWhiteSpace($legacy) -or $legacy -eq $ShortcutName) { continue }
+            $legacyPath = Join-Path $folder ("{0}.lnk" -f $legacy)
+            if (Test-Path -LiteralPath $legacyPath) {
+                Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
+                Write-Host "  Removed legacy shortcut: $legacyPath"
+            }
         }
         $lnkPath = Join-Path $folder ("{0}.lnk" -f $ShortcutName)
         $lnk = $wsh.CreateShortcut($lnkPath)

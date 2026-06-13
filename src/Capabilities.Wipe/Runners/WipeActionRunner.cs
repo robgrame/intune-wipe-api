@@ -1,6 +1,7 @@
 using System.Text.Json;
 using IntuneDeviceActions.Actions;
 using IntuneDeviceActions.Capabilities.Wipe.Audit;
+using IntuneDeviceActions.Capabilities.Wipe.Schedule;
 using IntuneDeviceActions.Capabilities.Wipe.Services;
 using IntuneDeviceActions.Models;
 using IntuneDeviceActions.Services;
@@ -15,6 +16,9 @@ namespace IntuneDeviceActions.Capabilities.Wipe.Runners;
 /// <remarks>
 /// Steps:
 /// <list type="number">
+///   <item><b>(Step 0)</b> if a <see cref="WipeScheduleStore"/> is registered,
+///         enforce capability-side temporal gating — defer wipes whose wave
+///         hasn't fired yet (defense-in-depth alongside client-side gating);</item>
 ///   <item>resolve Entra directory object id;</item>
 ///   <item>check membership of the allowed Entra group;</item>
 ///   <item>validate Intune↔Entra mapping (ownership);</item>
@@ -33,15 +37,18 @@ public sealed class WipeActionRunner : IActionRunner
     private readonly ActionIdempotencyService _ledger;
     private readonly AuditService _audit;
     private readonly ActionStatusTracker _statusTracker;
+    private readonly WipeScheduleStore? _scheduleStore;
     private readonly ILogger<WipeActionRunner> _log;
 
     public WipeActionRunner(GraphWipeService graph, ActionIdempotencyService ledger,
-        AuditService audit, ActionStatusTracker statusTracker, ILogger<WipeActionRunner> log)
+        AuditService audit, ActionStatusTracker statusTracker, ILogger<WipeActionRunner> log,
+        WipeScheduleStore? scheduleStore = null)
     {
         _graph = graph;
         _ledger = ledger;
         _audit = audit;
         _statusTracker = statusTracker;
+        _scheduleStore = scheduleStore;
         _log = log;
     }
 
@@ -66,6 +73,63 @@ public sealed class WipeActionRunner : IActionRunner
         });
 
         _log.LogInformation("Running wipe action for {Device}", msg.DeviceName);
+
+        // Step 0) Capability-side temporal gate. The portal allows operators
+        // to schedule wipe waves; the client polls /api/schedule/me and
+        // gates locally, but a malicious / tampered client could still POST
+        // /api/actions early. Defense-in-depth: if the device is enrolled
+        // in a wave whose ScheduledAtUtc is still in the future, defer
+        // (no Graph call, no ledger reservation, NO status row — so the
+        // wipe stays issuable once the wave fires).
+        if (_scheduleStore is not null && Guid.TryParse(msg.EntraDeviceId, out var gatedDeviceId))
+        {
+            try
+            {
+                var (defer, scheduledAtUtc) = await _scheduleStore.ShouldDeferWipeAsync(gatedDeviceId, ct);
+                if (defer && scheduledAtUtc is { } when_)
+                {
+                    var secondsUntilFire = (long)Math.Max(0, (when_ - DateTimeOffset.UtcNow).TotalSeconds);
+                    _audit.TrackEvent(AuditEvents.ScheduleGated, new Dictionary<string, string>
+                    {
+                        [AuditEvents.Prop.CorrelationId]            = msg.CorrelationId,
+                        [AuditEvents.Prop.DeviceName]               = msg.DeviceName,
+                        [AuditEvents.Prop.EntraDeviceId]            = msg.EntraDeviceId,
+                        [AuditEvents.Prop.ActionType]               = Type,
+                        [AuditEvents.Prop.ScheduleScheduledAtUtc]   = when_.ToString("O"),
+                        [AuditEvents.Prop.ScheduleSecondsUntilFire] = secondsUntilFire.ToString(),
+                    }, LogLevel.Information);
+                    _log.LogInformation(
+                        "Wipe deferred by capability-side schedule gate: device {Device} is enrolled in a wave that fires at {When} ({Seconds}s from now).",
+                        msg.DeviceName, when_, secondsUntilFire);
+                    // Intentionally do NOT call RecordTerminalAsync — this is
+                    // not a terminal denial. The Graph wipe simply hasn't
+                    // happened yet and will be reissued when the wave fires
+                    // (or when the client re-POSTs after the gate opens).
+                    //
+                    // KNOWN GAP (rubber-duck #3): the SB message that
+                    // delivered this envelope is consumed on `return` — if
+                    // the client never re-POSTs (uninstalled, network gone,
+                    // user logged out for good), this wave-membership is
+                    // silently lost. The mitigations today are:
+                    //   * the portal keeps the wave row visible to operators
+                    //     so they can re-issue manually, and
+                    //   * the client polls /api/schedule/me on every cycle
+                    //     and re-POSTs once the gate opens.
+                    // TODO: when we add the future scheduler (Step F in the
+                    // plan) it can re-enqueue gated waves automatically at
+                    // ScheduledAtUtc, removing the dependence on the client.
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Schedule lookup must never break the wipe path. Log and
+                // continue — failing open is the safe behaviour here
+                // (operator intent is "this device IS wipeable, just maybe
+                // not yet"; the client gate is the primary mechanism).
+                _log.LogWarning(ex, "Wipe schedule gate lookup failed; proceeding without gating.");
+            }
+        }
 
         // 1) Resolve Entra directory object id
         string? deviceObjId;
