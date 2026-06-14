@@ -17,7 +17,7 @@
 - [Controlli di sicurezza](#controlli-di-sicurezza-in-profondit%C3%A0)
 - [Permessi Microsoft Graph](#permessi-microsoft-graph)
 - [Quickstart deploy](#quickstart-deploy)
-- [Uso del client PowerShell](#uso-del-client-powershell-51)
+- [Client Win32 — esperienza utente](#client-win32--distribuzione-e-esperienza-utente-wipe)
 - [API](#api)
 - [Configurazione](#configurazione)
 - [Osservabilità & audit](#osservabilit%C3%A0--audit)
@@ -369,10 +369,108 @@ Output bicep utili: `webAppName`, `webAppHostname`, `procAppName`, `wipeAppName`
 `ledgerContainerName`, `uamiWipePrincipalId`, `uamiWorkerPrincipalId`,
 `uamiWebPrincipalId`.
 
-## Uso del client PowerShell 5.1
+## Client Win32 — distribuzione e esperienza utente (wipe)
 
-Distribuibile via Intune (Win32 app, esecuzione in contesto SYSTEM) oppure
-eseguibile manualmente:
+Il client è distribuito come **Win32 app Intune** (pacchetto in
+`client/intune-win32-package/`) oppure eseguibile manualmente da PowerShell
+5.1. L'architettura è **biprocesso** per via del vincolo di ACL del
+certificato SCEP/PKCS:
+
+| Processo | Contesto | Ruolo |
+|---|---|---|
+| `Launch-Wipe.ps1` | **Utente interattivo** | Mostra la UI di conferma (WinForms), triggera il task SYSTEM al click *Esegui reset* |
+| `Invoke-WipeFromTask.ps1` | **SYSTEM** (Scheduled Task) | Accede al certificato in `Cert:\LocalMachine\My`, chiama l'API, persiste il risultato |
+| `Watch-WipeStatus.ps1` | **SYSTEM** (Scheduled Task) | Polla `GET /api/actions/status/{correlationId}` e aggiorna il file di stato per la UI |
+
+Il private key del certificato dispositivo è ACL'd a SYSTEM/Administrators:
+un processo non-admin non può usarlo per TLS client auth. Il dialogo di
+conferma deve però girare nella sessione interattiva dell'utente (Session 0
+isolation impedisce a SYSTEM di aprire UI). La separazione risolve il
+conflitto: `Launch-Wipe.ps1` mostra la UI, poi triggera il task.
+
+### Fase 1 — Dialogo di conferma
+
+`Launch-Wipe.ps1` carica il modulo `WipeConfirmationDialog.ps1` e mostra la
+finestra di conferma:
+
+- intestazione rossa con simbolo di avviso
+- testo esplicito: irreversibilità dell'operazione e ~90 min di downtime
+- dettagli identificativi del dispositivo (nome, EntraDeviceId, IntuneDeviceId)
+- checkbox obbligatoria di consapevolezza
+- campo di testo che richiede di digitare `WIPE` in maiuscolo per abilitare il bottone
+
+![Dialogo di conferma wipe — Fase 1](docs/dialog-screenshot.png)
+
+> **Generazione screenshot:** su Windows, esegui
+> `powershell.exe -STA -File docs\Capture-DialogScreenshot.ps1`
+> per rigenerare tutti e quattro i frame (`dialog-screenshot.png`,
+> `dialog-progress.png`, `dialog-result-success.png`,
+> `dialog-result-error.png`).
+
+### Fase 2 — Esecuzione con avanzamento live
+
+Appena l'utente clicca *Esegui reset*, il dialogo **non si chiude**: la
+fase 1 viene nascosta e la fase 2 subentra nella stessa finestra con:
+
+- barra di avanzamento (marquee → deterministic al completamento)
+- etichetta di stato colorata (blu → verde successo / rosso errore)
+- `CorrelationId` del wipe stampato in modo prominente (serve all'helpdesk)
+- log a colori con timestamp (info / success / warning / error / muted)
+- pulsante *Monitora avanzamento live...* (visibile al completamento) che
+  apre `Show-WipeProgressDialog` per seguire l'avanzamento Intune in tempo reale
+- pulsante *Chiudi* abilitato solo al termine dell'operazione
+
+### Dialoghi di risultato
+
+Terminata la fase 2, la UI mostra dialoghi dedicati (`WipeResultDialogs.ps1`):
+
+| Esito | Dialogo |
+|---|---|
+| **Successo** | Conferma in verde, `CorrelationId` evidenziato, pulsante "Copia dettagli" per helpdesk ticket |
+| **Errore** | Messaggio di errore business-friendly, HTTP status, dettagli tecnici collassabili + "Copia dettagli" |
+| **Stato sconosciuto** | Avviso "wipe avviato ma esito non confermato" con `CorrelationId` per verifica manuale |
+
+### Dialogo di monitoraggio live
+
+`Show-WipeProgressDialog` — aperto manualmente o dal pulsante *Monitora
+avanzamento live...* — segue il file di stato scritto dal task SYSTEM
+(`%ProgramData%\IntuneWipeClient\status\<corrId>.json`) e mostra:
+
+- stato Intune tradotto in italiano (`pending` → `active` → `done` / `removedFromIntune`)
+- metadati del device dall'ultimo poll Graph (LastSync, ComplianceState, OsVersion)
+- timeline delle transizioni di stato
+- pulsante *Chiudi* (il task SYSTEM continua in background)
+
+### Distribuzione via Intune (Win32 app)
+
+```pwsh
+# 1. Build del pacchetto .intunewin
+cd client\intune-win32-package
+.\Build-IntuneWinPackage.ps1
+# → dist\IntuneWipeClient.intunewin
+
+# 2. Pubblicazione su Intune (idempotente: rimuove e ripubblica se esiste)
+.\Publish-ToIntune.ps1 `
+    -ApiUrl          'https://<webHost>.azurewebsites.net/api/actions' `
+    -FunctionKey     '<host-key>' `
+    -AssignToGroupId '<entra-group-object-id>'   # opzionale
+```
+
+`Publish-ToIntune.ps1` autentica via Microsoft Graph (modulo `IntuneWin32App`,
+installato automaticamente). Il pacchetto installa:
+
+| Percorso | Contenuto |
+|---|---|
+| `%ProgramFiles%\IntuneWipeClient\` | script + moduli + `config.json` (ACL: SYSTEM + Administrators) |
+| `%ProgramData%\Microsoft\Windows\Start Menu\Programs\Migrazione a MODERN.lnk` | Collegamento Start Menu (tutti gli utenti) |
+| `%PUBLIC%\Desktop\Migrazione a MODERN.lnk` | Collegamento Desktop pubblico |
+| `HKLM:\SOFTWARE\MSLABS\IntuneWipeClient` | Chiave di detection (Version, ProductCode, InstallDir) |
+
+`Install.ps1` esegue un **self-test** automatico subito dopo la registrazione
+del task SYSTEM (`-SelfTest`) per rilevare eventuali blocchi AppLocker / WDAC
+prima del primo uso reale da parte dell'utente.
+
+### Uso standalone (senza Win32 package)
 
 ```powershell
 .\client\Invoke-DeviceWipe.ps1 `
@@ -381,16 +479,9 @@ eseguibile manualmente:
   -FunctionKey  '<function-key>'
 ```
 
-Lo script:
-
-1. Legge l'**Entra Device Id** da `dsregcmd /status`
-2. Legge l'**Intune Device Id** (`DeviceClientId`) dal registro `HKLM:\SOFTWARE\Microsoft\Enrollments\*`
-3. Mostra una finestra WinForms con: intestazione rossa di warning, dettagli del dispositivo, avviso esplicito di irreversibilità e ~90 minuti di downtime, checkbox di consapevolezza obbligatoria, input testuale che richiede di digitare `WIPE` per abilitare il bottone
-4. Sceglie il certificato dispositivo da `Cert:\LocalMachine\My`
-5. Invoca `POST /api/actions`
-6. Monitora `GET /api/actions/status/{correlationId}` ogni 5 secondi di default (configurabile) fino a stato terminale oppure timeout, usando sempre il `correlationId`
-
-Usa `-Silent` per scenari unattended (test). Nel pacchetto Win32 il poller SYSTEM usa lo stesso endpoint di stato ogni 5 secondi di default; l'intervallo e la durata massima sono configurabili via `StatusPollIntervalSeconds` / `StatusPollMaxMinutes`.
+Usa `-Silent` per scenari unattended (test). Il poller di stato usa
+`GET /api/actions/status/{correlationId}` ogni 5 secondi (configurabile via
+`StatusPollIntervalSeconds` / `StatusPollMaxMinutes`).
 
 ## API
 
@@ -728,13 +819,13 @@ customEvents
 │   │   └── Models/                     # ActionRequest, ActionRequestMessage
 │   │                                   #   (con [JsonExtensionData] Extras)
 │   ├── Shared.Tests/                   # xUnit + FluentAssertions sul core
-│   ├── Capabilities.Wipe/              # capability "wipe" (Models, Runners, Services)
+│   ├── Capabilities.Wipe/              # capability "wipe" (Models, Runners, Services, Schedule)
 │   ├── Capabilities.BitLocker/         # capability "bitlocker-rotate"
 │   ├── Capabilities.Autopilot/         # capability "autopilot-register"
 │   ├── Capabilities.Autopilot.Tests/   # xUnit sulla capability Autopilot
 │   ├── Capabilities.Rename/            # capability "device-rename" (LOOKUP customer CMDB + Graph setDeviceName)
 │   ├── Web/                            # IntuneDeviceActions.Web (EP1, mTLS)
-│   │   └── Functions/                  # ActionRequest, ActionStatus, ActionLedger_*
+│   │   └── Functions/                  # ActionRequest, ActionStatus, ActionLedger_*, ScheduleManifest
 │   ├── Proc/                           # IntuneDeviceActions.Proc (Flex)
 │   │   └── Functions/                  # RequestIntake, ActionDispatch, ActionStatusPoller
 │   ├── Wipe/                           # IntuneDeviceActions.Wipe (Flex, privilegiata)
@@ -752,30 +843,54 @@ customEvents
 │   ├── Invoke-DeviceRename.runbook.ps1
 │   └── README.md
 ├── client/
-│   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client (entrypoint wipe)
+│   ├── Invoke-DeviceWipe.ps1           # PS 5.1 client standalone (entrypoint wipe)
 │   ├── Invoke-AutopilotRegister.ps1    # PS 5.1 client (self-registration Autopilot)
-│   ├── Invoke-RotateBitLockerKey.ps1   # PS 5.1 client (rotate BitLocker key)
-│   ├── Invoke-RenameDevice.ps1         # PS 5.1 client (device rename — invia solo il serial; il newName lo risolve il backend via lookup CMDB)
+│   ├── Invoke-BitLockerKeyRotation.ps1 # PS 5.1 client (rotate BitLocker key)
+│   ├── Invoke-RenameDevice.ps1         # PS 5.1 client (device rename)
 │   ├── DeviceIdentity.psm1             # modulo identità device (Pester-tested)
-│   └── WipeConfirmationDialog.ps1      # WinForms dialog (shared module)
+│   ├── ActionStatusClient.psm1         # helper polling GET /api/actions/status
+│   ├── MdmSyncNudge.psm1               # nudge MDM sync post-wipe (best-effort)
+│   ├── WipeConfirmationDialog.ps1      # builder WinForms bifase (fase 1 + fase 2)
+│   ├── intune-remediation-schedule/    # Intune Proactive Remediation — schedule gate
+│   │   ├── Detect.ps1                  # verifica freschezza di schedule.json
+│   │   ├── Remediate.ps1               # polla /api/schedule/me, persiste schedule.json
+│   │   └── README.md
+│   ├── intune-win32-package/           # Win32 LOB app per distribuzione via Intune
+│   │   ├── Build-IntuneWinPackage.ps1  # produce dist\IntuneWipeClient.intunewin
+│   │   ├── Publish-ToIntune.ps1        # pubblica / aggiorna la Win32 app su Intune (idempotente)
+│   │   ├── README.md
+│   │   └── source/                     # file installati sul device
+│   │       ├── Install.ps1             # installa file, task SYSTEM, shortcut, chiave di detection
+│   │       ├── Uninstall.ps1           # rimozione pulita
+│   │       ├── Detect.ps1              # detection rule Intune
+│   │       ├── Launch-Wipe.ps1         # launcher user-context: mostra UI, triggera il task SYSTEM
+│   │       ├── Invoke-WipeFromTask.ps1 # task SYSTEM: usa il cert, chiama l'API, persiste result
+│   │       ├── Watch-WipeStatus.ps1    # task SYSTEM: polla status e aggiorna il file di stato
+│   │       ├── WipeConfirmationDialog.ps1  # UI bifase (fase 1 conferma + fase 2 progress live)
+│   │       ├── WipeResultDialogs.ps1   # dialoghi di risultato (success / error / unknown)
+│   │       ├── Show-WipeProgressDialog.ps1 # dialogo monitoraggio live (tails status JSON)
+│   │       ├── DeviceIdentity.psm1
+│   │       ├── ActionStatusClient.psm1
+│   │       ├── MdmSyncNudge.psm1
+│   │       ├── Invoke-DeviceWipe.ps1   # copia dal parent — synced da Build-IntuneWinPackage.ps1
+│   │       ├── config.json             # ApiUrl + FunctionKey (ACL = SYSTEM + Administrators)
+│   │       ├── version.txt             # versione package (es. 1.0.22)
+│   │       └── assets/                 # icone Win32 (16/24/32/48/64/128/256 px)
+│   └── tests/                          # Pester tests (DeviceIdentity, ActionStatusClient)
 └── docs/
     ├── architecture.png
+    ├── dialog-screenshot.png           # screenshot fase 1 — conferma (generato da Capture-DialogScreenshot.ps1)
+    ├── dialog-progress.png             # screenshot fase 2 — esecuzione live (generato da Capture-DialogScreenshot.ps1)
+    ├── Capture-DialogScreenshot.ps1    # genera tutti i frame PNG (phase1/phase2/success/error)
     ├── architectural-improvements.md
     ├── capabilities-autopilot-bitlocker.md
     ├── cost-analysis-vnet-vs-public.md
     ├── howto-new-capability-function.md
     ├── howto-new-capability-runbook.md
-    ├── security-compliance-banking.md   # inventario controlli + mappatura PCI-DSS/ISO 27001/EBA/DORA/Banca d'Italia 285/13
-    ├── security-gaps-pending.md         # cosa manca / normativa / costo infra (vista sintetica per stakeholder)
-    ├── security-remediation-roadmap.md  # sizing effort + phasing 3 sprint per chiudere i gap
-    ├── dialog-screenshot.png
-    ├── Capture-DialogScreenshot.ps1
-    └── Presentazione-Soluzione-Intune-Self-Wipe.eml
+    ├── security-compliance-banking.md  # inventario controlli + mappatura PCI-DSS/ISO 27001/EBA/DORA/Banca d'Italia 285/13
+    ├── security-gaps-pending.md        # cosa manca / normativa / costo infra (vista sintetica per stakeholder)
+    └── security-remediation-roadmap.md # sizing effort + phasing 3 sprint per chiudere i gap
 ```
-
-> **Nota sull'email di presentazione** (`docs/Presentazione-Soluzione-Intune-Self-Wipe.eml`):
-> include `X-Unsent: 1` per aprirsi come bozza editabile in **Outlook classic**.
-> Il nuovo Outlook e Outlook Web la aprono in sola lettura.
 
 ## Roadmap
 
@@ -791,6 +906,8 @@ customEvents
 - [x] Capability `autopilot-register` (self-registration in Windows Autopilot; il client raccoglie l'hardware hash, l'API esegue l'import Graph)
 - [x] Capability `bitlocker-rotate` (rotazione self-service della recovery key BitLocker)
 - [x] Capability `device-rename` (rename via lookup CMDB cliente + `setDeviceName` Graph, con pre-check collisioni `displayName` su Entra _e_ `deviceName` su Intune)
+- [x] **Client Win32 package** — architettura biprocesso user/SYSTEM, dialogo bifase (conferma + progress live), dialoghi di risultato (success/error/unknown), self-test automatico all'installazione
+- [x] **Schedule gate** — `GET /api/schedule/me` (endpoint action-agnostic + `IScheduleProvider` plug-in), gate server-side in `WipeActionRunner`, Intune Proactive Remediation (`client/intune-remediation-schedule/`) per sincronizzare il manifest sul device
 - [ ] Notifica esito (Teams webhook / email) al termine del wipe
 - [ ] Rimozione della Function Key dal client (mTLS-only dietro APIM/App Gateway)
 - [ ] CA trust lifecycle via Key Vault references
