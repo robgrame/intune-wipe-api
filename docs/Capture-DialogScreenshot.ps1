@@ -90,7 +90,7 @@ if ($Frame -in 'all','phase2') {
     $stamp = '10:32:15'
     foreach ($entry in @(
         @{ t = '10:32:14'; msg = 'Avvio della richiesta di reset...';               color = [System.Drawing.Color]::FromArgb(20,20,20) }
-        @{ t = '10:32:14'; msg = 'Identita dispositivo raccolta.';                  color = [System.Drawing.Color]::FromArgb(0,120,50)  }
+        @{ t = '10:32:14'; msg = "Identit$([char]0x00E0) dispositivo raccolta.";               color = [System.Drawing.Color]::FromArgb(0,120,50)  }
         @{ t = '10:32:14'; msg = "Certificato selezionato: CN=$DeviceName";         color = [System.Drawing.Color]::FromArgb(80,80,80)  }
         @{ t = '10:32:15'; msg = 'Invio richiesta POST /api/actions...';            color = [System.Drawing.Color]::FromArgb(20,20,20)  }
         @{ t = '10:32:15'; msg = "202 Accepted — correlationId=$CorrelationId";    color = [System.Drawing.Color]::FromArgb(0,120,50)  }
