@@ -23,6 +23,8 @@ param(
     [Parameter(Mandatory = $false)] [string] $CertificateSubjectLike,
     [Parameter(Mandatory = $false)] [string] $CertificateIssuerLike = '*MSLABS-SUBCA01*;*MSLABS-ADCS*',
     [Parameter(Mandatory = $false)] [string] $CertificateThumbprint,
+    [Parameter(Mandatory = $false)] [int] $StatusPollIntervalSeconds = 5,
+    [Parameter(Mandatory = $false)] [int] $StatusPollMaxMinutes = 30,
     [Parameter(Mandatory = $false)] [string] $ShortcutName = 'Migrazione a MODERN',
     # Legacy shortcut names removed during install so that upgrades from older
     # versions don't leave stale .lnk files alongside the renamed one. Keep
@@ -77,6 +79,7 @@ try {
         'WipeResultDialogs.ps1',
         'Show-WipeProgressDialog.ps1',
         'Launch-Wipe.ps1',
+        'ActionStatusClient.psm1',
         'DeviceIdentity.psm1',
         'MdmSyncNudge.psm1',
         'version.txt'
@@ -104,6 +107,8 @@ try {
         CertificateSubjectLike = $CertificateSubjectLike
         CertificateIssuerLike  = $CertificateIssuerLike
         CertificateThumbprint  = $CertificateThumbprint
+        StatusPollIntervalSeconds = [Math]::Max(1, $StatusPollIntervalSeconds)
+        StatusPollMaxMinutes      = [Math]::Max(1, $StatusPollMaxMinutes)
         InstalledVersion       = $Version
         InstalledAtUtc         = (Get-Date).ToUniversalTime().ToString('o')
     }
@@ -247,7 +252,7 @@ try {
 
     # --- Scheduled task: StatusPoller (SYSTEM, on-demand, executable by Users) ---
     # Runs Watch-WipeStatus.ps1, which polls GET /api/actions/status/{corrId}
-    # using the device cert (mTLS) every 60s for up to 30 min and writes
+    # using the device cert (mTLS) every 5s by default for up to 30 min and writes
     # %ProgramData%\IntuneWipeClient\status\<corrId>.json. The user-side
     # Launch-Wipe.ps1 launches Show-WipeProgressDialog which tails that
     # file - no msg.exe / Terminal-Services popups involved.

@@ -26,6 +26,7 @@ $InstallDir = Join-Path $ProgramFiles64 'IntuneWipeClient'
 $DialogPath = Join-Path $InstallDir       'WipeConfirmationDialog.ps1'
 $ResultUiPath = Join-Path $InstallDir     'WipeResultDialogs.ps1'
 $ProgressUiPath = Join-Path $InstallDir   'Show-WipeProgressDialog.ps1'
+$ConfigPath = Join-Path $InstallDir       'config.json'
 $DataDir    = Join-Path $env:ProgramData  'IntuneWipeClient'
 $ResultPath = Join-Path $DataDir          'last-result.json'
 $TaskFull   = '\IntuneWipeClient\InvokeWipe'
@@ -39,6 +40,9 @@ Start-Transcript -Path $LogFile -Force | Out-Null
 # unit-tested in isolation (see client\tests\DeviceIdentity.Tests.ps1).
 # The module is deployed alongside this script by the Win32 installer.
 Import-Module (Join-Path $InstallDir 'DeviceIdentity.psm1') -Force -DisableNameChecking
+if (Test-Path (Join-Path $InstallDir 'ActionStatusClient.psm1')) {
+    Import-Module (Join-Path $InstallDir 'ActionStatusClient.psm1') -Force -DisableNameChecking
+}
 
 function Show-Message {
     param([string]$Text, [string]$Title, [System.Windows.Forms.MessageBoxIcon]$Icon = 'Information')
@@ -63,6 +67,16 @@ try {
     . $DialogPath
     . $ResultUiPath
     if (Test-Path $ProgressUiPath) { . $ProgressUiPath }
+
+    $progressSettings = [pscustomobject]@{ IntervalSeconds = 5; MaxMinutes = 30 }
+    if ((Get-Command Resolve-ActionStatusMonitoringOptions -ErrorAction SilentlyContinue) -and (Test-Path $ConfigPath)) {
+        try {
+            $cfg = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            $progressSettings = Resolve-ActionStatusMonitoringOptions -Config $cfg
+        } catch {
+            Write-Host ("WARN: could not read polling settings from config.json; using defaults. {0}" -f $_.Exception.Message)
+        }
+    }
 
     $deviceName = $env:COMPUTERNAME
     $entraId    = Get-EntraDeviceIdSafe
@@ -227,7 +241,8 @@ try {
 
                 $openLive = $null
                 if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {
-                    $openLive = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName }.GetNewClosure()
+                    $maxMinutes = $progressSettings.MaxMinutes
+                    $openLive = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName -MaxMinutes $maxMinutes }.GetNewClosure()
                 }
                 Complete-WipeForm -Form $form -Success $true `
                     -FinalStatus 'Reset richiesto. In attesa di presa in carico da Intune.' `
@@ -264,7 +279,8 @@ try {
 
         $openLiveFromConfirm = $null
         if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {
-            $openLiveFromConfirm = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName }.GetNewClosure()
+            $maxMinutes = $progressSettings.MaxMinutes
+            $openLiveFromConfirm = { param($c) Show-WipeProgressDialog -CorrelationId $c -DeviceName $deviceName -MaxMinutes $maxMinutes }.GetNewClosure()
         }
 
         $confirmed = Show-WipeConfirmationLive `
@@ -365,7 +381,7 @@ try {
         # success dialog if the progress UI script is missing (older
         # install).
         if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {
-            Show-WipeProgressDialog -CorrelationId $corr -DeviceName $deviceName
+            Show-WipeProgressDialog -CorrelationId $corr -DeviceName $deviceName -MaxMinutes $progressSettings.MaxMinutes
         } else {
             Show-WipeSuccessDialog -CorrelationId $corr -DeviceName $deviceName
         }

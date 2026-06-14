@@ -121,8 +121,8 @@ param auditTableName string = 'auditevents'
 @description('Azure Table holding per-correlationId action status. Polled by ActionStatusPollerFunction.')
 param actionStatusTableName string = 'actionstatus'
 
-@description('NCRONTAB expression for the action status poller. Default: every 2 minutes.')
-param actionStatusPollerCron string = '0 */2 * * * *'
+@description('NCRONTAB expression for the action status poller. Default: every 5 seconds.')
+param actionStatusPollerCron string = '*/5 * * * * *'
 
 @description('Max age (hours) of action-status rows the poller will still consider. Rows older than this with non-terminal state are flipped to action.poll-timeout. Defaults to 24 (one full day after request).')
 param actionStatusPollMaxAgeHours int = 24

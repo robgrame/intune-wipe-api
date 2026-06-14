@@ -387,9 +387,10 @@ Lo script:
 2. Legge l'**Intune Device Id** (`DeviceClientId`) dal registro `HKLM:\SOFTWARE\Microsoft\Enrollments\*`
 3. Mostra una finestra WinForms con: intestazione rossa di warning, dettagli del dispositivo, avviso esplicito di irreversibilità e ~90 minuti di downtime, checkbox di consapevolezza obbligatoria, input testuale che richiede di digitare `WIPE` per abilitare il bottone
 4. Sceglie il certificato dispositivo da `Cert:\LocalMachine\My`
-5. Invoca l'API con `Invoke-RestMethod -Certificate` e mostra il `correlationId`
+5. Invoca `POST /api/actions`
+6. Monitora `GET /api/actions/status/{correlationId}` ogni 5 secondi di default (configurabile) fino a stato terminale oppure timeout, usando sempre il `correlationId`
 
-Usa `-Silent` per scenari unattended (test).
+Usa `-Silent` per scenari unattended (test). Nel pacchetto Win32 il poller SYSTEM usa lo stesso endpoint di stato ogni 5 secondi di default; l'intervallo e la durata massima sono configurabili via `StatusPollIntervalSeconds` / `StatusPollMaxMinutes`.
 
 ## API
 
@@ -452,6 +453,10 @@ la richiesta, l'`actionType` è opaco al chiamante. Stessi requisiti di auth di
 `POST /api/actions` (mTLS + binding cert↔device): un device può leggere solo il
 proprio esito. Esiti possibili: `404` (nessuna riga), `401` (cert/binding),
 `403` (riga di un altro device).
+
+Questo è l'endpoint canonico per il monitoraggio client-side: sia il client standalone
+sia il pacchetto Win32 fanno polling del `correlationId` restituito dal `POST /api/actions`
+invece di ripetere chiamate al `POST`.
 
 ### `GET` / `POST /api/actions/ledger/{intuneDeviceId}[/reset]`
 
@@ -623,7 +628,8 @@ essere override come app settings della singola Function App.
 | `Wipe__AllowedGroupId` | _(obbligatorio)_ | ObjectId gruppo Entra |
 | `Wipe__KeepEnrollmentData` | `false` | Mantiene enrollment Intune (utile in DEV per evitare provisioning Autopilot da zero) |
 | `Wipe__KeepUserData` | `false` | Mantiene dati utente |
-| `ActionStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc) |
+| `ActionStatusPoller__CronExpression` | _(da bicep)_ | NCRONTAB del poller (Proc). Default: ogni 5 secondi |
+| `ActionStatus__MinPollIntervalSeconds` | `5` | Intervallo minimo tra due probe server-side della stessa riga `actionstatus` |
 | `Idempotency__AdminApiEnabled` | `false` | Abilita gli endpoint `actions/ledger` admin (solo Web) |
 | `Idempotency__AdminCertThumbprints` | _(vuoto = fail-closed)_ | CSV/`\|`/`;`-separated SHA-1 thumbprint dei certificati operatore autorizzati a chiamare `actions/ledger/*`. Vuoto significa "nessun admin abilitato" → ogni chiamata risponde 403. Usare un set di cert dedicati (smartcard/HSM-backed), **distinto** dai cert device. |
 | `WipeRunbook__WebhookUrl` | _(vuoto)_ | **Deprecato** — usato dal vecchio `WipeRunbookForwardingRunner` per la sola capability `wipe-runbook`. Preferire `RunbookBridge:Routes:wipe-runbook` (vedi sotto). |

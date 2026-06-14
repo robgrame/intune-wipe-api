@@ -19,6 +19,10 @@
     Function key for the API, baked into the install command line.
 .PARAMETER TenantId
     Entra tenant id (defaults to current az context).
+.PARAMETER StatusPollIntervalSeconds
+    Default polling interval baked into the installed client.
+.PARAMETER StatusPollMaxMinutes
+    Default maximum live-monitoring duration baked into the installed client.
 .PARAMETER AssignToGroupId
     Optional Entra group object id to assign the app to as Required.
 .PARAMETER Publisher
@@ -29,6 +33,8 @@ param(
     [Parameter(Mandatory = $true)]  [string] $ApiUrl,
     [Parameter(Mandatory = $true)]  [string] $FunctionKey,
     [Parameter(Mandatory = $false)] [string] $TenantId,
+    [Parameter(Mandatory = $false)] [int] $StatusPollIntervalSeconds = 5,
+    [Parameter(Mandatory = $false)] [int] $StatusPollMaxMinutes = 30,
     [Parameter(Mandatory = $false)] [string] $AssignToGroupId,
     [Parameter(Mandatory = $false)] [string] $Publisher = 'MSLABS IT',
     [Parameter(Mandatory = $false)] [string] $DisplayName = 'Intune Wipe Self-Service Client',
@@ -301,6 +307,8 @@ $installParts = @(
     "-ApiUrl `"$ApiUrl`""
     "-FunctionKey `"$FunctionKey`""
     "-CertificateIssuerLike `"$CertificateIssuerLike`""
+    "-StatusPollIntervalSeconds $StatusPollIntervalSeconds"
+    "-StatusPollMaxMinutes $StatusPollMaxMinutes"
 )
 if ($CertificateSubjectLike) {
     $installParts += "-CertificateSubjectLike `"$CertificateSubjectLike`""

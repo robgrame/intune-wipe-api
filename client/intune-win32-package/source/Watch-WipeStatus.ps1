@@ -6,7 +6,7 @@
     Triggered on-demand by Invoke-WipeFromTask.ps1 right after a wipe is
     accepted by the API. Polls GET {ApiBase}/status/{correlationId} with
     the device client certificate (mTLS) every -IntervalSeconds (default
-    60) for up to -MaxMinutes (default 30) or until the server reports a
+    5) for up to -MaxMinutes (default 30) or until the server reports a
     terminal state. Persists a fresh snapshot to:
 
         %ProgramData%\IntuneWipeClient\status\latest.json
@@ -27,7 +27,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)] [string] $CorrelationId,
-    [Parameter(Mandatory = $false)] [int]    $IntervalSeconds = 60,
+    [Parameter(Mandatory = $false)] [int]    $IntervalSeconds = 5,
     [Parameter(Mandatory = $false)] [int]    $MaxMinutes      = 30
 )
 
@@ -41,6 +41,8 @@ $DataDir      = Join-Path $env:ProgramData  'IntuneWipeClient'
 $StatusDir    = Join-Path $DataDir          'status'
 $LogDir       = Join-Path $DataDir          'Logs'
 $ResultPath   = Join-Path $DataDir          'last-result.json'
+
+Import-Module (Join-Path $InstallDir 'ActionStatusClient.psm1') -Force -DisableNameChecking
 
 # Argument-less invocation path: scheduled-task /Run cannot pass arguments,
 # so the task manifest invokes us with no -CorrelationId and we recover it
@@ -101,15 +103,6 @@ function Get-ClientCertificate {
     return ($certs | Sort-Object NotAfter -Descending | Select-Object -First 1)
 }
 
-function Get-StatusUrl {
-    param([string]$ApiUrl, [string]$CorrelationId)
-    # Config stores the canonical actions endpoint (e.g.
-    # https://host/api/actions). Append /status/{id} to derive the status
-    # endpoint regardless of any trailing slash.
-    $trimmed = $ApiUrl.TrimEnd('/')
-    return ("{0}/status/{1}" -f $trimmed, $CorrelationId)
-}
-
 function Write-StatusFile {
     param([string]$CorrelationId, [pscustomobject]$Snapshot, [string]$LocalState, [string]$Note)
     $obj = [ordered]@{
@@ -133,59 +126,49 @@ try {
     $cert = Get-ClientCertificate -Cfg $cfg
     if (-not $cert) { throw "No client certificate found in LocalMachine\My matching the configured selectors." }
 
-    $statusUrl = Get-StatusUrl -ApiUrl $cfg.ApiUrl -CorrelationId $CorrelationId
+    $settings = Resolve-ActionStatusMonitoringOptions -Config $cfg -IntervalSeconds $IntervalSeconds -MaxMinutes $MaxMinutes
+    $statusUrl = Get-ActionStatusUrl -ApiUrl $cfg.ApiUrl -CorrelationId $CorrelationId
     Write-Host ("Polling: {0}  (cert={1})" -f $statusUrl, $cert.Thumbprint)
-    Write-WipeEventLog -EntryType Information -EventId 3001 -Message ("StatusPoller started. CorrelationId={0}, IntervalSeconds={1}, MaxMinutes={2}" -f $CorrelationId, $IntervalSeconds, $MaxMinutes)
+    Write-WipeEventLog -EntryType Information -EventId 3001 -Message ("StatusPoller started. CorrelationId={0}, IntervalSeconds={1}, MaxMinutes={2}" -f $CorrelationId, $settings.IntervalSeconds, $settings.MaxMinutes)
 
     Write-StatusFile -CorrelationId $CorrelationId -Snapshot $null -LocalState 'polling' -Note 'poller started'
 
-    $deadline = (Get-Date).AddMinutes($MaxMinutes)
     $lastState = ''
-    $attempt   = 0
-    $headers   = @{ 'x-functions-key' = $cfg.FunctionKey }
-
-    while ((Get-Date) -lt $deadline) {
-        $attempt++
-        $snapshot = $null
-        try {
-            $resp = Invoke-RestMethod -Method Get -Uri $statusUrl -Certificate $cert -Headers $headers -TimeoutSec 30 -ErrorAction Stop
-            $snapshot = $resp
-        } catch {
-            $statusCode = $null
-            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
-            $msg = $_.Exception.Message
-            Write-Host ("WARN attempt {0}: {1} (HTTP {2})" -f $attempt, $msg, $statusCode)
-            Write-StatusFile -CorrelationId $CorrelationId -Snapshot $null -LocalState 'error' `
-                -Note ("attempt {0}: HTTP {1} - {2}" -f $attempt, $statusCode, $msg)
-            Start-Sleep -Seconds $IntervalSeconds
-            continue
+    $result = Wait-ActionStatus `
+        -ApiUrl $cfg.ApiUrl `
+        -CorrelationId $CorrelationId `
+        -Certificate $cert `
+        -FunctionKey $cfg.FunctionKey `
+        -IntervalSeconds $settings.IntervalSeconds `
+        -MaxMinutes $settings.MaxMinutes `
+        -OnUpdate {
+            param($update)
+            $snapshot = $update.Snapshot
+            $state = $null
+            $terminal = $false
+            if ($snapshot) {
+                $state = [string]$snapshot.state
+                $terminal = [bool]$snapshot.terminal
+            }
+            if ($update.LocalState -eq 'error') {
+                Write-Host ("WARN attempt {0}: {1}" -f $update.Attempt, $update.Note)
+            }
+            Write-StatusFile -CorrelationId $CorrelationId -Snapshot $snapshot -LocalState $update.LocalState -Note $update.Note
+            if ($state -and $state -ne $lastState) {
+                $delta = "state '{0}' -> '{1}' (terminal={2}, attempt={3}, correlationId={4})" -f $lastState, $state, $terminal, $update.Attempt, $CorrelationId
+                Write-WipeEventLog -EntryType Information -EventId 3002 -Message $delta
+                Write-Host $delta
+                $lastState = $state
+            }
         }
 
-        $state    = [string]$snapshot.state
-        $terminal = [bool]  $snapshot.terminal
-        Write-StatusFile -CorrelationId $CorrelationId -Snapshot $snapshot `
-            -LocalState ($(if ($terminal) { 'terminal' } else { 'polling' })) `
-            -Note ("attempt {0}" -f $attempt)
-
-        if ($state -and $state -ne $lastState) {
-            $delta = "state '{0}' -> '{1}' (terminal={2}, attempt={3}, correlationId={4})" -f $lastState, $state, $terminal, $attempt, $CorrelationId
-            Write-WipeEventLog -EntryType Information -EventId 3002 -Message $delta
-            Write-Host $delta
-            $lastState = $state
-        }
-
-        if ($terminal) {
-            Write-WipeEventLog -EntryType Information -EventId 3003 -Message ("StatusPoller reached terminal state '{0}' after {1} attempts. CorrelationId={2}" -f $state, $attempt, $CorrelationId)
-            break
-        }
-
-        Start-Sleep -Seconds $IntervalSeconds
+    if ($result.LocalState -eq 'terminal' -and $result.Snapshot) {
+        Write-WipeEventLog -EntryType Information -EventId 3003 -Message ("StatusPoller reached terminal state '{0}' after {1} attempts. CorrelationId={2}" -f [string]$result.Snapshot.state, $result.Attempt, $CorrelationId)
     }
-
-    if ((Get-Date) -ge $deadline -and -not ($snapshot -and $snapshot.terminal)) {
-        Write-StatusFile -CorrelationId $CorrelationId -Snapshot $snapshot -LocalState 'timeout' `
-            -Note ("no terminal state after {0} minutes" -f $MaxMinutes)
-        Write-WipeEventLog -EntryType Warning -EventId 3004 -Message ("StatusPoller timed out after {0} minutes. LastState='{1}'. CorrelationId={2}" -f $MaxMinutes, $lastState, $CorrelationId)
+    elseif ($result.LocalState -eq 'timeout') {
+        Write-StatusFile -CorrelationId $CorrelationId -Snapshot $result.Snapshot -LocalState 'timeout' `
+            -Note ("no terminal state after {0} minutes" -f $settings.MaxMinutes)
+        Write-WipeEventLog -EntryType Warning -EventId 3004 -Message ("StatusPoller timed out after {0} minutes. LastState='{1}'. CorrelationId={2}" -f $settings.MaxMinutes, $lastState, $CorrelationId)
     }
 
     exit 0

@@ -31,7 +31,7 @@ $Util      = Join-Path $ToolsDir 'IntuneWinAppUtil.exe'
 New-Item -ItemType Directory -Force -Path $SourceDir, $ToolsDir, $DistDir | Out-Null
 
 Write-Host "==> Syncing canonical scripts into .\source ..." -ForegroundColor Cyan
-foreach ($f in @('Invoke-DeviceWipe.ps1','WipeConfirmationDialog.ps1','DeviceIdentity.psm1','MdmSyncNudge.psm1')) {
+foreach ($f in @('Invoke-DeviceWipe.ps1','WipeConfirmationDialog.ps1','ActionStatusClient.psm1','DeviceIdentity.psm1','MdmSyncNudge.psm1')) {
     $src = Join-Path $ClientDir $f
     if (-not (Test-Path $src)) { throw "Missing source script: $src" }
     Copy-Item -LiteralPath $src -Destination (Join-Path $SourceDir $f) -Force

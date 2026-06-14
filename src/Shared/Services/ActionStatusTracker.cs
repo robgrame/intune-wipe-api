@@ -73,6 +73,7 @@ public sealed class ActionStatusTracker
     private readonly AuditService _audit;
     private readonly ILogger<ActionStatusTracker> _log;
     private readonly int _pollMaxAgeHours;
+    private readonly int _minPollIntervalSeconds;
     // Lazy table provisioning: instead of calling CreateIfNotExists() at DI
     // resolution time (which permanently disables the tracker on a single
     // transient cold-start failure — e.g. DNS for a freshly-created private
@@ -91,11 +92,13 @@ public sealed class ActionStatusTracker
             .ToDictionary(p => p.ActionType, p => p, StringComparer.OrdinalIgnoreCase);
         _audit = audit;
         _log = log;
-        _pollMaxAgeHours = int.TryParse(cfg["ActionStatus:PollMaxAgeHours"], out var h) ? Math.Max(1, h) : 24;
+        _pollMaxAgeHours = ActionStatusPollingSettings.GetPollMaxAgeHours(cfg);
+        _minPollIntervalSeconds = ActionStatusPollingSettings.GetMinPollIntervalSeconds(cfg);
     }
 
     public bool IsEnabled => _table is not null;
     public int PollMaxAgeHours => _pollMaxAgeHours;
+    public int MinPollIntervalSeconds => _minPollIntervalSeconds;
 
     /// <summary>
     /// Single-flight, retry-on-failure provisioning of the underlying table.
@@ -282,6 +285,7 @@ public sealed class ActionStatusTracker
         var managedDeviceId  = row.GetString("ManagedDeviceId") ?? string.Empty;
         var deviceName       = row.GetString("DeviceName") ?? string.Empty;
         var issuedAt         = row.GetDateTimeOffset("IssuedAt") ?? DateTimeOffset.UtcNow;
+        var lastPolledAt     = row.GetDateTimeOffset("LastPolledAt") ?? NeverTimestamp;
         var previousState    = row.GetString("LastState") ?? "pending";
         var attempts         = row.GetInt32("PollAttempts") ?? 0;
 
@@ -315,6 +319,14 @@ public sealed class ActionStatusTracker
                 [AuditEvents.Prop.IssuedAt]        = issuedAt.ToString("o"),
                 [AuditEvents.Prop.PollAttempts]    = attempts.ToString(),
             }, Microsoft.Extensions.Logging.LogLevel.Warning);
+            return;
+        }
+
+        if (lastPolledAt > NeverTimestamp &&
+            DateTimeOffset.UtcNow - lastPolledAt < TimeSpan.FromSeconds(_minPollIntervalSeconds))
+        {
+            _log.LogDebug("ActionStatusTracker throttled poll for {CorrelationId}: min interval {MinPollIntervalSeconds}s not elapsed yet.",
+                correlationId, _minPollIntervalSeconds);
             return;
         }
 

@@ -6,7 +6,7 @@ namespace IntuneDeviceActions.Functions;
 
 /// <summary>
 /// Timer-triggered poller that drives the wipe-action status tracking loop.
-/// Runs every 5 minutes by default (configurable via <c>WipeStatusPoller:CronExpression</c>).
+/// Runs every 5 seconds by default (configurable via <c>ActionStatusPoller:CronExpression</c>).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,8 +31,8 @@ public sealed class ActionStatusPollerFunction
         _log = log;
     }
 
-    // NCRONTAB: every 5 minutes (sec min hour day month dayOfWeek). Override
-    // with %WipeStatusPoller:CronExpression% app setting if needed.
+    // NCRONTAB: every 5 seconds (sec min hour day month dayOfWeek). Override
+    // with %ActionStatusPoller:CronExpression% app setting if needed.
     [Function("ActionStatusPoller")]
     public async Task Run(
         [TimerTrigger("%ActionStatusPoller:CronExpression%")] TimerInfo timer,
@@ -40,7 +40,7 @@ public sealed class ActionStatusPollerFunction
     {
         if (!_tracker.IsEnabled)
         {
-            _log.LogDebug("WipeStatusPoller skipped: tracker not configured");
+            _log.LogDebug("ActionStatusPoller skipped: tracker not configured");
             return;
         }
 
@@ -65,10 +65,10 @@ public sealed class ActionStatusPollerFunction
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "WipeStatusPoller: unhandled error on {PK}", row.PartitionKey);
+                _log.LogWarning(ex, "ActionStatusPoller: unhandled error on {PK}", row.PartitionKey);
             }
         }
 
-        _log.LogInformation("WipeStatusPoller tick: polled={Polled} transitions={Transitions}", processed, transitions);
+        _log.LogInformation("ActionStatusPoller tick: polled={Polled} transitions={Transitions}", processed, transitions);
     }
 }

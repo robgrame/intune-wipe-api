@@ -30,6 +30,12 @@
     Function key for the Azure Function (header x-functions-key).
 .PARAMETER Silent
     Skip the UI (use only for unattended testing).
+.PARAMETER StatusPollIntervalSeconds
+    Polling interval for GET /api/actions/status/{correlationId}. Default: 5.
+.PARAMETER StatusPollMaxMinutes
+    Maximum time to wait for a terminal status when monitoring is enabled.
+.PARAMETER NoWaitForStatus
+    Do not poll the status endpoint after the request is accepted.
 .NOTES
     The client sends two anti-replay headers required by the API:
       X-Request-Timestamp : current UTC time in ISO-8601 (server tolerates ±5 min by default)
@@ -46,6 +52,9 @@ param(
     [string] $CertificateIssuerLike,
     [Parameter(Mandatory = $false)] [string] $FunctionKey,
     [Parameter(Mandatory = $false)] [string] $ActionType = 'wipe',
+    [Parameter(Mandatory = $false)] [int] $StatusPollIntervalSeconds = 5,
+    [Parameter(Mandatory = $false)] [int] $StatusPollMaxMinutes = 30,
+    [switch] $NoWaitForStatus,
     [switch] $Silent,
     [switch] $DryRun
 )
@@ -64,6 +73,7 @@ if (-not $DryRun) {
 # can be unit-tested in isolation (see client\tests\DeviceIdentity.Tests.ps1).
 # The module is copied next to this script by Build-IntuneWinPackage.ps1.
 Import-Module (Join-Path $PSScriptRoot 'DeviceIdentity.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'ActionStatusClient.psm1') -Force -DisableNameChecking
 
 function Show-WipeConfirmation {
     param([string]$DeviceName, [string]$EntraDeviceId, [string]$IntuneDeviceId)
@@ -76,6 +86,25 @@ function Show-WipeConfirmation {
 # UI definition has a single source of truth, also reused by
 # docs/Capture-DialogScreenshot.ps1).
 . (Join-Path $PSScriptRoot 'WipeConfirmationDialog.ps1')
+
+function Write-StatusTransition {
+    param(
+        [Parameter(Mandatory = $true)] [pscustomobject] $Update,
+        [ref] $LastState
+    )
+
+    $state = $null
+    if ($Update.Snapshot) {
+        $state = [string]$Update.Snapshot.state
+    }
+
+    if ($state -and $state -ne $LastState.Value) {
+        Write-Host ("  status         : {0}" -f $state) -ForegroundColor Cyan
+        $LastState.Value = $state
+    } elseif ($Update.LocalState -eq 'error') {
+        Write-Host ("  polling warn   : {0}" -f $Update.Note) -ForegroundColor Yellow
+    }
+}
 
 Write-Host 'Collecting device identity...' -ForegroundColor Cyan
 if ($DryRun) {
@@ -141,10 +170,40 @@ try {
     Write-Host ("  status         : {0}" -f $statusOut)
     Write-Host ("  correlationId  : {0}" -f $corrOut)
     if ($msgOut) { Write-Host ("  message        : {0}" -f $msgOut) }
+    $shouldMonitorStatus = (-not $Silent) -and (-not $NoWaitForStatus) -and (-not [string]::IsNullOrWhiteSpace($corrOut))
+    $monitorResult = $null
+    if ($shouldMonitorStatus) {
+        Write-Host ("Polling GET /api/actions/status every {0}s (max {1} min)..." -f $StatusPollIntervalSeconds, $StatusPollMaxMinutes) -ForegroundColor Cyan
+        $lastState = ''
+        $monitorResult = Wait-ActionStatus `
+            -ApiUrl $ApiUrl `
+            -CorrelationId $corrOut `
+            -Certificate $cert `
+            -FunctionKey $FunctionKey `
+            -IntervalSeconds $StatusPollIntervalSeconds `
+            -MaxMinutes $StatusPollMaxMinutes `
+            -OnUpdate {
+                param($update)
+                Write-StatusTransition -Update $update -LastState ([ref]$lastState)
+            }
+
+        if ($monitorResult.LocalState -eq 'terminal' -and $monitorResult.Snapshot) {
+            Write-Host ("  terminal state : {0}" -f [string]$monitorResult.Snapshot.state) -ForegroundColor Green
+        } elseif ($monitorResult.LocalState -eq 'timeout') {
+            Write-Host ("  polling timed out after {0} minutes" -f $StatusPollMaxMinutes) -ForegroundColor Yellow
+        }
+    }
     if (-not $Silent) {
+        $dialogMessage = "Richiesta di reset accettata.`r`n`r`nCorrelation Id: {0}" -f $resp.correlationId
+        if ($monitorResult -and $monitorResult.Snapshot) {
+            $dialogMessage += "`r`nStato finale: {0}" -f [string]$monitorResult.Snapshot.state
+        } elseif ($shouldMonitorStatus) {
+            $dialogMessage += "`r`nMonitoraggio: nessuno stato terminale entro {0} minuti." -f $StatusPollMaxMinutes
+        }
+        $dialogMessage += "`r`n`r`nIl dispositivo verra' reimpostato a breve e restera' inutilizzabile per circa 90 minuti."
         Add-Type -AssemblyName System.Windows.Forms | Out-Null
         [System.Windows.Forms.MessageBox]::Show(
-            ("Richiesta di reset accettata.`r`n`r`nCorrelation Id: {0}`r`n`r`nIl dispositivo verra' reimpostato a breve e restera' inutilizzabile per circa 90 minuti." -f $resp.correlationId),
+            $dialogMessage,
             'Reset richiesto',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null

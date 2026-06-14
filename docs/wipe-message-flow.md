@@ -135,8 +135,8 @@ sequenceDiagram
     P->>T1: state-observed / state-changed
   end
 
-  loop client polling (every Xs)
-    L->>API: GET /api/actions/status?id=...<br/>+ mTLS
+  loop client polling (default every 5s, configurable)
+    L->>API: GET /api/actions/status/{correlationId}<br/>+ mTLS
     API->>T1: read snapshot
     T1-->>API: state
     API-->>L: 200 {state, lastUpdated}
@@ -218,7 +218,7 @@ matters; each one fail-closes with a typed `action.denied.*` audit event.
 | --- | --- |
 | `RequestIntakeFunction` | Consumes `action-requests`. Persists initial status row (`PENDING`) to `ActionStatus` table. Forwards an `ActionDispatchMessage` to `action-dispatch` (W3C traceparent restored by `ServiceBusTraceContextMiddleware`). |
 | `DispatchRouterFunction` | Consumes `action-dispatch`. Resolves `IActionRunner` by `actionType` via DI. For `wipe`, dispatches to `WipeForwardingRunner` which sends to the per-capability `wipe-action` queue. |
-| `ActionStatusPoller` | Periodically probes `IActionStatusProbe` implementations (Wipe, Autopilot, BitLocker) against Graph; emits `action.state-observed` / `action.state-changed` audit events; updates `ActionStatus` table. |
+| `ActionStatusPoller` | Periodically probes `IActionStatusProbe` implementations (Wipe, Autopilot, BitLocker) against Graph; default cadence 5s (configurable) with per-row minimum interval guard; emits `action.state-observed` / `action.state-changed` audit events; updates `ActionStatus` table. |
 
 ### 3.6 Wipe Function — privileged executor (`idactions-wipe-dev`)
 
@@ -235,7 +235,7 @@ matters; each one fail-closes with a typed `action.denied.*` audit event.
 | Step | Path |
 | --- | --- |
 | Proc poller observes state | `ActionStatus` row updated (state column) |
-| Device polls `/api/actions/status` | Client cert mTLS + IDOR re-check |
+| Device polls `/api/actions/status/{correlationId}` | Client cert mTLS + IDOR re-check; `correlationId` is the only client-visible tracking key |
 | `Launch-Wipe` reads `last-result.json` | Wrapper + poller both append updates; launcher renders progress |
 | Final dialog | `WipeResultDialogs.ps1` (`Show-WipeSuccessDialog` / `Show-WipeErrorDialog` / `Show-WipeUnknownDialog` with `-ReasonHint`) |
 

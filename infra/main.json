@@ -241,9 +241,9 @@
     },
     "actionStatusPollerCron": {
       "type": "string",
-      "defaultValue": "0 */2 * * * *",
+      "defaultValue": "*/5 * * * * *",
       "metadata": {
-        "description": "NCRONTAB expression for the action status poller. Default: every 2 minutes."
+        "description": "NCRONTAB expression for the action status poller. Default: every 5 seconds."
       }
     },
     "actionStatusPollMaxAgeHours": {
