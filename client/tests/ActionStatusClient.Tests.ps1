@@ -53,22 +53,15 @@ Describe 'Resolve-ActionStatusMonitoringOptions' {
 }
 
 Describe 'Wait-ActionStatus' {
-    It 'returns terminal status and preserves the default 5-second cadence contract' {
+    It 'returns terminal status immediately when the endpoint is already terminal' {
         InModuleScope ActionStatusClient {
             $updates = New-Object System.Collections.Generic.List[object]
-            $script:calls = 0
-            $script:now = [datetime]'2026-01-01T00:00:00Z'
 
             Mock Invoke-RestMethod {
-                $script:calls++
-                if ($script:calls -eq 1) {
-                    return [pscustomobject]@{ state = 'pending'; terminal = $false }
-                }
                 return [pscustomobject]@{ state = 'done'; terminal = $true }
             }
 
-            Mock Get-Date { $script:now }
-            Mock Start-Sleep { param($Seconds) $script:now = $script:now.AddSeconds($Seconds) }
+            Mock Start-Sleep {}
 
             $result = Wait-ActionStatus `
                 -ApiUrl 'https://host/api/actions' `
@@ -81,7 +74,39 @@ Describe 'Wait-ActionStatus' {
 
             $result.LocalState | Should -Be 'terminal'
             ([string]$result.Snapshot.state) | Should -Be 'done'
-            $updates.Count | Should -Be 2
+            $updates.Count | Should -Be 1
+            Assert-MockCalled Start-Sleep -Times 0 -Exactly
+        }
+    }
+
+    It 'uses the provided polling interval between non-terminal attempts' {
+        InModuleScope ActionStatusClient {
+            $global:ActionStatusClientGetDateCalls = 0
+
+            Mock Get-Date {
+                $global:ActionStatusClientGetDateCalls++
+                switch ($global:ActionStatusClientGetDateCalls) {
+                    1 { [datetime]'2026-01-01T00:00:00Z' }
+                    2 { [datetime]'2026-01-01T00:00:00Z' }
+                    default { [datetime]'2026-01-01T00:01:01Z' }
+                }
+            }
+
+            Mock Invoke-RestMethod {
+                [pscustomobject]@{ state = 'pending'; terminal = $false }
+            }
+
+            Mock Start-Sleep {}
+
+            $result = Wait-ActionStatus `
+                -ApiUrl 'https://host/api/actions' `
+                -CorrelationId 'corr-2' `
+                -Certificate ([pscustomobject]@{ Thumbprint = 'thumb' }) `
+                -FunctionKey 'key' `
+                -IntervalSeconds 5 `
+                -MaxMinutes 1
+
+            $result.LocalState | Should -Be 'timeout'
             Assert-MockCalled Start-Sleep -Times 1 -Exactly -ParameterFilter { $Seconds -eq 5 }
         }
     }
