@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "8351108783174605802"
+      "templateHash": "12738364364789213269"
     }
   },
   "parameters": {
@@ -1014,7 +1014,17 @@
           },
           "scaleAndConcurrency": {
             "maximumInstanceCount": 40,
-            "instanceMemoryMB": 2048
+            "instanceMemoryMB": 2048,
+            "alwaysReady": [
+              {
+                "name": "function:requestintake",
+                "instanceCount": 1
+              },
+              {
+                "name": "function:actiondispatch",
+                "instanceCount": 1
+              }
+            ]
           },
           "runtime": {
             "name": "dotnet-isolated",
@@ -1208,7 +1218,13 @@
           },
           "scaleAndConcurrency": {
             "maximumInstanceCount": 40,
-            "instanceMemoryMB": 2048
+            "instanceMemoryMB": 2048,
+            "alwaysReady": [
+              {
+                "name": "function:wipeaction",
+                "instanceCount": 1
+              }
+            ]
           },
           "runtime": {
             "name": "dotnet-isolated",
@@ -3161,7 +3177,13 @@
           },
           "scaleAndConcurrency": {
             "maximumInstanceCount": 40,
-            "instanceMemoryMB": 2048
+            "instanceMemoryMB": 2048,
+            "alwaysReady": [
+              {
+                "name": "function:autopilotaction",
+                "instanceCount": 1
+              }
+            ]
           },
           "runtime": {
             "name": "dotnet-isolated",
@@ -3314,7 +3336,13 @@
           },
           "scaleAndConcurrency": {
             "maximumInstanceCount": 40,
-            "instanceMemoryMB": 2048
+            "instanceMemoryMB": 2048,
+            "alwaysReady": [
+              {
+                "name": "function:bitlockeraction",
+                "instanceCount": 1
+              }
+            ]
           },
           "runtime": {
             "name": "dotnet-isolated",
@@ -3472,7 +3500,13 @@
           },
           "scaleAndConcurrency": {
             "maximumInstanceCount": 40,
-            "instanceMemoryMB": 2048
+            "instanceMemoryMB": 2048,
+            "alwaysReady": [
+              {
+                "name": "function:renameaction",
+                "instanceCount": 1
+              }
+            ]
           },
           "runtime": {
             "name": "dotnet-isolated",
@@ -3850,38 +3884,6 @@
     "privateDnsZoneTable": {
       "type": "string",
       "value": "[format('privatelink.table.{0}', environment().suffixes.storage)]"
-    },
-    "peStorageProcBlobId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[0]))]"
-    },
-    "peStorageProcTableId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[1]))]"
-    },
-    "peStorageProcQueueId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stProcName'), variables('procPeSubresources')[2]))]"
-    },
-    "peStorageWipeBlobId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-blob', variables('stWipeName')))]"
-    },
-    "peStorageWebBlobId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[0]))]"
-    },
-    "peStorageWebFileId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[1]))]"
-    },
-    "peStorageWebQueueId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[2]))]"
-    },
-    "peStorageWebTableId": {
-      "type": "string",
-      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe-{1}', variables('stWebName'), variables('webPeSubresources')[3]))]"
     }
   }
 }
