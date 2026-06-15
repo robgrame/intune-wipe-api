@@ -1,7 +1,11 @@
 using IntuneDeviceActions;
 using IntuneDeviceActions.Capabilities.Wipe;
+using IntuneDeviceActions.Dashboard;
 using IntuneDeviceActions.Middleware;
 using IntuneDeviceActions.Services;
+using Azure.Core;
+using Azure.Messaging.ServiceBus.Administration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -32,6 +36,20 @@ var host = new HostBuilder()
         // the Web role knows wipe scheduling exists).
         services.AddScheduleAggregator();
         services.AddWipeScheduleProvider();
+
+        // Operator cruscotto — GET /api/dashboard{,/data}. Reads SB queue
+        // depths (admin client) and the idempotency ledger (BlobContainerClient
+        // already registered by AddActionIdempotency). Gated by
+        // Dashboard:Enabled + mTLS + operator thumbprint allow-list.
+        services.AddSingleton(sp =>
+        {
+            var cfg = sp.GetRequiredService<IConfiguration>();
+            var cred = sp.GetRequiredService<TokenCredential>();
+            var ns = cfg["ServiceBus:FullyQualifiedNamespace"]
+                ?? throw new InvalidOperationException("ServiceBus:FullyQualifiedNamespace must be configured for the dashboard.");
+            return new ServiceBusAdministrationClient(ns, cred);
+        });
+        services.AddSingleton<DashboardTelemetryService>();
     })
     .Build();
 

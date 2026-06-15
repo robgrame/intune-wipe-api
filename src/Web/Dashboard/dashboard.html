@@ -1,0 +1,319 @@
+<!doctype html>
+<!--
+  IntuneDeviceActions — Cruscotto (operator dashboard, "flow of energy" view).
+  Served by Web.DashboardFunction at GET /api/dashboard. Polls
+  /api/dashboard/data every REFRESH_MS ms and re-renders.
+  All CSS + JS inline so the function returns a single self-contained payload.
+-->
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>IntuneDeviceActions — Cruscotto</title>
+  <style>
+    :root {
+      --bg:#0e1116; --panel:#161b22; --text:#e6edf3; --muted:#8b949e;
+      --green:#3fb950; --yellow:#d29922; --red:#f85149; --gray:#6e7681;
+      --edge:#30363d; --accent:#58a6ff;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:1px solid var(--edge); }
+    header h1 { margin:0; font-size:16px; font-weight:600; letter-spacing:.2px; }
+    header h1 .sub { color:var(--muted); font-weight:400; margin-left:8px; }
+    .meta { color:var(--muted); font-size:12px; }
+    .meta .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); margin-right:6px; vertical-align:middle; }
+    main { padding:18px 22px; }
+    .grid { display:grid; grid-template-columns: 1fr 320px; gap:18px; align-items:start; }
+    .panel { background:var(--panel); border:1px solid var(--edge); border-radius:8px; padding:12px 14px; }
+    .panel h2 { margin:0 0 10px; font-size:13px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    .warnings { display:flex; flex-direction:column; gap:6px; }
+    .warn { background:rgba(248,81,73,.08); border-left:3px solid var(--red); padding:8px 10px; border-radius:4px; font-size:13px; }
+    .warn.warn-yellow { background:rgba(210,153,34,.08); border-left-color:var(--yellow); }
+    .empty { color:var(--muted); font-style:italic; }
+    svg { width:100%; height:auto; display:block; }
+
+    /* Node visual state, driven by class on the <g> element from JS */
+    .node rect { stroke:var(--edge); stroke-width:1.5; }
+    .node text.title { fill:var(--text); font-size:13px; font-weight:600; }
+    .node text.metric { fill:var(--muted); font-size:11px; }
+    .node.green rect    { fill:#0b2410; stroke:var(--green); }
+    .node.yellow rect   { fill:#251a05; stroke:var(--yellow); }
+    .node.red rect      { fill:#2a0b0b; stroke:var(--red); }
+    .node.gray rect     { fill:#1c1f24; stroke:var(--gray); }
+    .node.green text.metric  { fill:#7ee787; }
+    .node.yellow text.metric { fill:#e3b341; }
+    .node.red text.metric    { fill:#ff7b72; }
+
+    /* Edges + flow particles */
+    .edge { fill:none; stroke:var(--edge); stroke-width:2; }
+    .edge.live { stroke:var(--accent); stroke-opacity:.6; }
+    .particle { fill:var(--accent); opacity:.85; }
+    .particle.hidden { display:none; }
+
+    table.kv { width:100%; border-collapse:collapse; font-size:12px; }
+    table.kv th, table.kv td { padding:4px 6px; text-align:left; border-bottom:1px solid var(--edge); }
+    table.kv th { color:var(--muted); font-weight:500; }
+    .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+    .pill.green  { background:rgba(63,185,80,.15);  color:var(--green); }
+    .pill.yellow { background:rgba(210,153,34,.15); color:var(--yellow); }
+    .pill.red    { background:rgba(248,81,73,.15);  color:var(--red); }
+    .pill.gray   { background:rgba(110,118,129,.15);color:var(--gray); }
+    footer { padding:10px 22px; color:var(--muted); font-size:11px; border-top:1px solid var(--edge); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>IntuneDeviceActions <span class="sub">— cruscotto operativo</span></h1>
+    <div class="meta"><span class="dot" id="liveDot"></span><span id="lastUpdate">in caricamento…</span></div>
+  </header>
+
+  <main>
+    <div class="grid">
+      <section class="panel">
+        <h2>Flusso messaggi</h2>
+        <!-- Topology SVG. JS positions/styles nodes by id and toggles edge particles. -->
+        <svg id="flow" viewBox="0 0 980 640" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <!-- Reusable arrowhead marker -->
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/>
+            </marker>
+            <marker id="arrowLive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)" opacity=".6"/>
+            </marker>
+
+            <!-- Edge paths used both for visual lines and as motion paths for particles. -->
+            <path id="p-client-web"     d="M 490 30  L 490 90"  />
+            <path id="p-web-areq"       d="M 490 130 L 490 180" />
+            <path id="p-areq-proc"      d="M 490 220 L 490 270" />
+            <path id="p-proc-disp"      d="M 490 310 L 490 360" />
+            <path id="p-disp-wipe"      d="M 460 400 Q 200 430 200 450" />
+            <path id="p-disp-autopilot" d="M 480 400 Q 380 430 380 450" />
+            <path id="p-disp-bitlocker" d="M 500 400 Q 600 430 600 450" />
+            <path id="p-disp-rename"    d="M 520 400 Q 800 430 800 450" />
+            <path id="p-wipe-graph"     d="M 200 510 Q 350 580 480 580" />
+            <path id="p-autop-graph"    d="M 380 510 Q 420 560 480 580" />
+            <path id="p-bitl-graph"     d="M 600 510 Q 560 560 500 580" />
+            <path id="p-renm-graph"     d="M 800 510 Q 650 580 510 580" />
+          </defs>
+
+          <!-- Static edges rendered from the same paths -->
+          <use id="e-client-web"     class="edge" href="#p-client-web"     marker-end="url(#arrow)"/>
+          <use id="e-web-areq"       class="edge" href="#p-web-areq"       marker-end="url(#arrow)"/>
+          <use id="e-areq-proc"      class="edge" href="#p-areq-proc"      marker-end="url(#arrow)"/>
+          <use id="e-proc-disp"      class="edge" href="#p-proc-disp"      marker-end="url(#arrow)"/>
+          <use id="e-disp-wipe"      class="edge" href="#p-disp-wipe"      marker-end="url(#arrow)"/>
+          <use id="e-disp-autopilot" class="edge" href="#p-disp-autopilot" marker-end="url(#arrow)"/>
+          <use id="e-disp-bitlocker" class="edge" href="#p-disp-bitlocker" marker-end="url(#arrow)"/>
+          <use id="e-disp-rename"    class="edge" href="#p-disp-rename"    marker-end="url(#arrow)"/>
+          <use id="e-wipe-graph"     class="edge" href="#p-wipe-graph"     marker-end="url(#arrow)"/>
+          <use id="e-autop-graph"    class="edge" href="#p-autop-graph"    marker-end="url(#arrow)"/>
+          <use id="e-bitl-graph"     class="edge" href="#p-bitl-graph"     marker-end="url(#arrow)"/>
+          <use id="e-renm-graph"     class="edge" href="#p-renm-graph"     marker-end="url(#arrow)"/>
+
+          <!-- Particles travelling along the edges (hidden by default, JS shows when queue has traffic) -->
+          <circle id="part-web-areq"       class="particle hidden" r="5"><animateMotion dur="2s"   repeatCount="indefinite"><mpath href="#p-web-areq"/></animateMotion></circle>
+          <circle id="part-areq-proc"      class="particle hidden" r="5"><animateMotion dur="2s"   repeatCount="indefinite"><mpath href="#p-areq-proc"/></animateMotion></circle>
+          <circle id="part-proc-disp"      class="particle hidden" r="5"><animateMotion dur="2s"   repeatCount="indefinite"><mpath href="#p-proc-disp"/></animateMotion></circle>
+          <circle id="part-disp-wipe"      class="particle hidden" r="5"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#p-disp-wipe"/></animateMotion></circle>
+          <circle id="part-disp-autopilot" class="particle hidden" r="5"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#p-disp-autopilot"/></animateMotion></circle>
+          <circle id="part-disp-bitlocker" class="particle hidden" r="5"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#p-disp-bitlocker"/></animateMotion></circle>
+          <circle id="part-disp-rename"    class="particle hidden" r="5"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#p-disp-rename"/></animateMotion></circle>
+
+          <!-- Nodes. JS rewrites the class (.green/.yellow/.red/.gray) and metric text. -->
+          <g class="node gray" id="n-client" transform="translate(420,0)">
+            <rect width="140" height="32" rx="6"/><text class="title" x="70" y="20" text-anchor="middle">Client mTLS</text>
+          </g>
+          <g class="node green" id="n-web" transform="translate(420,90)">
+            <rect width="140" height="44" rx="6"/>
+            <text class="title"  x="70" y="20" text-anchor="middle">Web (intake)</text>
+            <text class="metric" x="70" y="36" text-anchor="middle" id="m-web">—</text>
+          </g>
+          <g class="node green" id="n-areq" transform="translate(410,180)">
+            <rect width="160" height="44" rx="6"/>
+            <text class="title"  x="80" y="20" text-anchor="middle">SB action-requests</text>
+            <text class="metric" x="80" y="36" text-anchor="middle" id="m-areq">—</text>
+          </g>
+          <g class="node green" id="n-proc" transform="translate(420,270)">
+            <rect width="140" height="44" rx="6"/>
+            <text class="title"  x="70" y="20" text-anchor="middle">Proc dispatcher</text>
+            <text class="metric" x="70" y="36" text-anchor="middle" id="m-proc">—</text>
+          </g>
+          <g class="node green" id="n-disp" transform="translate(410,360)">
+            <rect width="160" height="44" rx="6"/>
+            <text class="title"  x="80" y="20" text-anchor="middle">SB action-dispatch</text>
+            <text class="metric" x="80" y="36" text-anchor="middle" id="m-disp">—</text>
+          </g>
+
+          <g class="node green" id="n-wipe" transform="translate(130,450)">
+            <rect width="140" height="60" rx="6"/>
+            <text class="title"  x="70" y="22" text-anchor="middle">Wipe</text>
+            <text class="metric" x="70" y="40" text-anchor="middle" id="m-wipe">—</text>
+            <text class="metric" x="70" y="54" text-anchor="middle" id="m-wipe2">—</text>
+          </g>
+          <g class="node green" id="n-autopilot" transform="translate(310,450)">
+            <rect width="140" height="60" rx="6"/>
+            <text class="title"  x="70" y="22" text-anchor="middle">Autopilot</text>
+            <text class="metric" x="70" y="40" text-anchor="middle" id="m-autopilot">—</text>
+            <text class="metric" x="70" y="54" text-anchor="middle" id="m-autopilot2">—</text>
+          </g>
+          <g class="node green" id="n-bitlocker" transform="translate(530,450)">
+            <rect width="140" height="60" rx="6"/>
+            <text class="title"  x="70" y="22" text-anchor="middle">BitLocker</text>
+            <text class="metric" x="70" y="40" text-anchor="middle" id="m-bitlocker">—</text>
+            <text class="metric" x="70" y="54" text-anchor="middle" id="m-bitlocker2">—</text>
+          </g>
+          <g class="node gray" id="n-rename" transform="translate(730,450)">
+            <rect width="140" height="60" rx="6"/>
+            <text class="title"  x="70" y="22" text-anchor="middle">Rename</text>
+            <text class="metric" x="70" y="40" text-anchor="middle" id="m-rename">—</text>
+            <text class="metric" x="70" y="54" text-anchor="middle" id="m-rename2">—</text>
+          </g>
+          <g class="node gray" id="n-graph" transform="translate(420,590)">
+            <rect width="140" height="32" rx="6"/>
+            <text class="title" x="70" y="20" text-anchor="middle">Microsoft Graph</text>
+          </g>
+        </svg>
+      </section>
+
+      <aside style="display:flex; flex-direction:column; gap:14px;">
+        <div class="panel">
+          <h2>Ledger idempotency</h2>
+          <table class="kv">
+            <tr><th>Stato</th><td><span id="ledgerPill" class="pill gray">—</span></td></tr>
+            <tr><th>Entries totali</th><td id="ledgerTotal">—</td></tr>
+            <tr><th>Bloccate (stuck)</th><td id="ledgerStuck">—</td></tr>
+            <tr><th>Più vecchia stuck</th><td id="ledgerOldest">—</td></tr>
+            <tr><th>Grace period</th><td id="ledgerGrace">—</td></tr>
+          </table>
+        </div>
+
+        <div class="panel">
+          <h2>Code Service Bus</h2>
+          <table class="kv" id="queueTable">
+            <tr><th>Coda</th><th>Att.</th><th>DLQ</th></tr>
+          </table>
+        </div>
+
+        <div class="panel">
+          <h2>Warnings</h2>
+          <div class="warnings" id="warnings"><div class="empty">nessun warning</div></div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <footer>Refresh ogni <span id="refreshSec">5</span>s · sorgenti: ServiceBus admin + Ledger blob enumeration · v1</footer>
+
+  <script>
+    const REFRESH_MS = 5000;
+    document.getElementById('refreshSec').textContent = (REFRESH_MS/1000).toFixed(0);
+
+    // Map of SB queue name -> SVG node id whose class we recolor + edge particle id we toggle.
+    const QUEUE_TO_NODE = {
+      'action-requests' : { node:'n-areq',      part:'part-areq-proc',      metricId:'m-areq'      },
+      'action-dispatch' : { node:'n-disp',      part:'part-proc-disp',      metricId:'m-disp'      },
+      'wipe-action'     : { node:'n-wipe',      part:'part-disp-wipe',      metricId:'m-wipe'      },
+      'autopilot-action': { node:'n-autopilot', part:'part-disp-autopilot', metricId:'m-autopilot' },
+      'bitlocker-action': { node:'n-bitlocker', part:'part-disp-bitlocker', metricId:'m-bitlocker' },
+      'rename-action'   : { node:'n-rename',    part:'part-disp-rename',    metricId:'m-rename'    },
+    };
+
+    function setNodeClass(id, cls) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('green','yellow','red','gray');
+      el.classList.add(cls || 'gray');
+    }
+    function setText(id, txt) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = txt;
+    }
+    function pillClass(status) {
+      switch ((status||'').toLowerCase()) {
+        case 'green':  return 'green';
+        case 'yellow': return 'yellow';
+        case 'red':    return 'red';
+        default:       return 'gray';
+      }
+    }
+
+    function render(data) {
+      setText('lastUpdate', 'aggiornato ' + new Date(data.generatedAt).toLocaleTimeString());
+
+      // Queues + corresponding capability nodes
+      const qBody = document.getElementById('queueTable');
+      qBody.innerHTML = '<tr><th>Coda</th><th>Att.</th><th>DLQ</th></tr>';
+      for (const q of (data.queues||[])) {
+        const meta = QUEUE_TO_NODE[q.name];
+        const cls  = pillClass(q.status);
+        if (meta) {
+          setNodeClass(meta.node, cls);
+          setText(meta.metricId, `act=${q.active}  dlq=${q.deadLetter}`);
+          const p = document.getElementById(meta.part);
+          if (p) p.classList.toggle('hidden', q.active === 0 && q.scheduled === 0);
+          // Color the inbound edge accordingly
+          const edgeId = 'e-' + meta.part.replace(/^part-/, '');
+          const edgeEl = document.getElementById(edgeId);
+          if (edgeEl) edgeEl.classList.toggle('live', q.active > 0);
+        }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${q.name}</td><td>${q.active}</td><td>${q.deadLetter}</td>`;
+        qBody.appendChild(tr);
+      }
+
+      // Web + Proc nodes: derive health from action-requests + action-dispatch queues
+      const arStatus   = (data.queues||[]).find(q => q.name === 'action-requests')?.status   || 'gray';
+      const dispStatus = (data.queues||[]).find(q => q.name === 'action-dispatch')?.status || 'gray';
+      setNodeClass('n-web',  pillClass(arStatus));
+      setNodeClass('n-proc', pillClass(dispStatus));
+      setText('m-web',  '/api/actions');
+      setText('m-proc', 'dispatcher');
+
+      // Ledger panel
+      const L = data.ledger || {};
+      const pill = document.getElementById('ledgerPill');
+      pill.className = 'pill ' + pillClass(L.status);
+      pill.textContent = (L.status||'—').toUpperCase();
+      setText('ledgerTotal', L.totalEntries ?? '—');
+      setText('ledgerStuck', L.stuckEntries ?? '—');
+      setText('ledgerOldest', L.oldestStuckIssuedAt
+        ? `${new Date(L.oldestStuckIssuedAt).toLocaleString()}  (${L.oldestStuckIntuneDeviceId||''})`
+        : '—');
+      setText('ledgerGrace', (L.graceHours ?? '—') + ' h');
+
+      // Warnings
+      const wEl = document.getElementById('warnings');
+      const ws = data.warnings || [];
+      if (ws.length === 0) {
+        wEl.innerHTML = '<div class="empty">nessun warning</div>';
+      } else {
+        wEl.innerHTML = '';
+        for (const w of ws) {
+          const d = document.createElement('div');
+          d.className = 'warn' + (w.startsWith('Queue') && w.includes('backlog') ? ' warn-yellow' : '');
+          d.textContent = w;
+          wEl.appendChild(d);
+        }
+      }
+
+      // Live dot
+      document.getElementById('liveDot').style.background = ws.length ? 'var(--red)' : 'var(--green)';
+    }
+
+    async function tick() {
+      try {
+        const r = await fetch('data', { cache:'no-store', credentials:'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        render(await r.json());
+      } catch (e) {
+        setText('lastUpdate', 'errore: ' + e.message);
+        document.getElementById('liveDot').style.background = 'var(--red)';
+      }
+    }
+    tick();
+    setInterval(tick, REFRESH_MS);
+  </script>
+</body>
+</html>

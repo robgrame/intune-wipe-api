@@ -1,0 +1,176 @@
+{
+  "annotations": { "list": [] },
+  "description": "IntuneDeviceActions — cruscotto operativo (Grafana). Import after provisioning via infra/dashboard-grafana.bicep. Replace ${DS_AZURE} and ${DS_AI} with your Azure Monitor and Application Insights data source UIDs (or use the Grafana variables defined below).",
+  "editable": true,
+  "schemaVersion": 39,
+  "tags": ["intune-device-actions", "operator"],
+  "templating": {
+    "list": [
+      {
+        "name": "sb_namespace",
+        "type": "constant",
+        "label": "Service Bus namespace",
+        "query": "idactions-sb-dev",
+        "current": { "selected": false, "text": "idactions-sb-dev", "value": "idactions-sb-dev" }
+      },
+      {
+        "name": "sb_resource_id",
+        "type": "constant",
+        "label": "SB resource ID",
+        "description": "Full ARM ID of the Service Bus namespace. /subscriptions/.../namespaces/<name>",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "title": "IntuneDeviceActions — Cruscotto",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Service Bus — active messages per queue",
+      "description": "Coda piena: consumer fermo (function app non triggera) o backlog. Soglie indicative: giallo >=10, rosso >=50.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AZURE}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Monitor",
+          "azureMonitor": {
+            "resourceUri": "${sb_resource_id}",
+            "metricNamespace": "Microsoft.ServiceBus/namespaces",
+            "metricName": "ActiveMessages",
+            "aggregation": "Average",
+            "timeGrain": "PT1M",
+            "dimensionFilters": [{ "dimension": "EntityName", "operator": "eq", "filters": ["*"] }]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Service Bus — dead-letter messages per queue",
+      "description": "Qualunque valore > 0 e' un'anomalia: consumer ha esaurito i retry oppure payload invalido.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AZURE}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Monitor",
+          "azureMonitor": {
+            "resourceUri": "${sb_resource_id}",
+            "metricNamespace": "Microsoft.ServiceBus/namespaces",
+            "metricName": "DeadletteredMessages",
+            "aggregation": "Average",
+            "timeGrain": "PT1M",
+            "dimensionFilters": [{ "dimension": "EntityName", "operator": "eq", "filters": ["*"] }]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "type": "stat",
+      "title": "Capability runners — invocations (15m)",
+      "description": "WipeAction / AutopilotRegister / RotateBitLockerKeys / Rename: numero di invocazioni recenti per role. Zero su tutti = pipeline ferma.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests | where timestamp > ago(15m) | where cloud_RoleName has_any ('wipe','autopilot','bitlocker','rename') | summarize count() by cloud_RoleName | order by cloud_RoleName asc",
+            "resultFormat": "table"
+          }
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+
+    {
+      "type": "table",
+      "title": "Ledger — entries bloccate (action.already-issued ultime 24h)",
+      "description": "Ogni riga e' una richiesta deduplicata silenziosamente. Stesso device ripetuto = ledger stuck (poller mai a terminal), reset via DELETE blob in action-ledger.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customEvents | where timestamp > ago(24h) | where name == 'action.already-issued' | extend device = tostring(customDimensions.deviceName), intune = tostring(customDimensions.intuneDeviceId), corr = tostring(customDimensions.correlationId), origCorr = tostring(customDimensions.originalCorrelationId) | project timestamp, device, intune, corr, origCorr | order by timestamp desc | take 50",
+            "resultFormat": "table"
+          }
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Web (intake) — HTTP success/failure",
+      "description": "Richieste accettate dal client. Spike di 4xx = client mTLS misconfigured; 5xx = bug intake.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests | where timestamp > $__timeFrom() and timestamp < $__timeTo() | where cloud_RoleName has 'web' | summarize success = countif(success == true), failure = countif(success == false) by bin(timestamp, 1m) | order by timestamp asc",
+            "resultFormat": "time_series"
+          }
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Graph dependency — p95 latency / failure rate",
+      "description": "Latency in degrado o picco di failure dalle capability runner verso Microsoft Graph.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "${DS_AI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies | where timestamp > $__timeFrom() and timestamp < $__timeTo() | where type == 'HTTP' and target has 'graph.microsoft.com' | summarize p95 = percentile(duration, 95), failures = countif(success == false) by bin(timestamp, 1m) | order by timestamp asc",
+            "resultFormat": "time_series"
+          }
+        }
+      ]
+    }
+  ]
+}
