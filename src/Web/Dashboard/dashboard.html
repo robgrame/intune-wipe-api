@@ -60,6 +60,67 @@
     .pill.red    { background:rgba(248,81,73,.15);  color:var(--red); }
     .pill.gray   { background:rgba(110,118,129,.15);color:var(--gray); }
     footer { padding:10px 22px; color:var(--muted); font-size:11px; border-top:1px solid var(--edge); }
+
+    /* Search bar */
+    .searchbar { display:flex; gap:8px; align-items:center; padding:12px 0 18px; }
+    .searchbar input { flex:1; padding:8px 12px; background:#0b0f14; color:var(--text);
+                       border:1px solid var(--edge); border-radius:6px; font:13px monospace; }
+    .searchbar input:focus { outline:none; border-color:var(--accent); }
+    .searchbar button { padding:8px 14px; background:var(--accent); color:#fff; border:none;
+                        border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; }
+    .searchbar button.secondary { background:var(--panel); color:var(--text); border:1px solid var(--edge); }
+    .searchbar button:hover { filter:brightness(1.15); }
+
+    /* Trace timeline + recommendation */
+    .reco { padding:12px 14px; border-radius:6px; margin-bottom:14px; border-left:4px solid var(--gray); background:rgba(110,118,129,.08); }
+    .reco.ok    { border-left-color:var(--green); background:rgba(63,185,80,.08); }
+    .reco.warn  { border-left-color:var(--yellow); background:rgba(210,153,34,.08); }
+    .reco.error { border-left-color:var(--red); background:rgba(248,81,73,.08); }
+    .reco h3 { margin:0 0 4px; font-size:14px; }
+    .reco p { margin:0 0 8px; color:var(--muted); font-size:13px; line-height:1.5; }
+    .reco button { padding:6px 12px; background:var(--accent); color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; }
+    .reco button.danger { background:var(--red); }
+    .reco button:hover { filter:brightness(1.15); }
+
+    .timeline { display:flex; flex-direction:column; gap:4px; max-height:520px; overflow-y:auto; padding-right:4px; }
+    .tev { display:grid; grid-template-columns:90px 90px 1fr; gap:10px; padding:6px 8px; border-left:3px solid var(--gray); background:#0b0f14; border-radius:0 4px 4px 0; font-size:12px; }
+    .tev.accepted, .tev.enqueued, .tev.received, .tev.forwarded, .tev.consumed { border-left-color:var(--accent); }
+    .tev.completed { border-left-color:var(--green); }
+    .tev.failed, .tev.exception { border-left-color:var(--red); }
+    .tev.dedup { border-left-color:var(--yellow); }
+    .tev.rearmed { border-left-color:#a371f7; }
+    .tev .ts { color:var(--muted); font-family:monospace; }
+    .tev .role { font-weight:600; font-size:11px; text-transform:uppercase; color:var(--accent); }
+    .tev .body { color:var(--text); }
+    .tev .body .small { color:var(--muted); font-size:11px; display:block; margin-top:2px; }
+
+    .device-rows { display:flex; flex-direction:column; gap:6px; }
+    .device-rows .row { display:grid; grid-template-columns:160px 1fr 90px; gap:10px; padding:8px 10px; background:#0b0f14; border-radius:4px; font-size:12px; cursor:pointer; }
+    .device-rows .row:hover { background:#0e1622; }
+    .device-rows .row code { color:var(--accent); }
+
+    /* Diagnostics tile */
+    .diag-line { display:flex; justify-content:space-between; padding:4px 0; font-size:12px; border-bottom:1px dashed var(--edge); }
+    .diag-line:last-child { border-bottom:none; }
+    .diag-line .v { font-family:monospace; color:var(--text); }
+    .diag-line .v.gray { color:var(--gray); }
+    .diag-line .v.green { color:var(--green); }
+    .diag-line .v.yellow { color:var(--yellow); }
+    .diag-line .v.red { color:var(--red); }
+
+    /* Stuck list */
+    .stuck-row { display:grid; grid-template-columns:1fr auto; gap:6px; padding:6px 8px; background:#0b0f14; border-radius:4px; margin-bottom:4px; font-size:12px; align-items:center; }
+    .stuck-row code { color:var(--accent); font-size:11px; }
+    .stuck-row .age { color:var(--yellow); font-size:11px; }
+    .stuck-row button { padding:3px 8px; background:var(--red); color:#fff; border:none; border-radius:3px; cursor:pointer; font-size:11px; }
+    .stuck-row button:hover { filter:brightness(1.2); }
+
+    /* Tab toggle */
+    .tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--edge); }
+    .tab { padding:8px 14px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent; font-size:13px; }
+    .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+    .tabpane { display:none; }
+    .tabpane.active { display:block; }
   </style>
 </head>
 <body>
@@ -69,6 +130,18 @@
   </header>
 
   <main>
+    <div class="searchbar">
+      <input id="searchInput" type="text" placeholder="correlationId GUID, intuneDeviceId GUID, oppure hostname (es. FC1DSK005)" autofocus />
+      <button id="btnTrace">🔍 Traccia</button>
+      <button id="btnDevice" class="secondary">Storico device</button>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="overview">📊 Panoramica</div>
+      <div class="tab" data-tab="trace">🔎 Trace</div>
+    </div>
+
+    <div class="tabpane active" id="tab-overview">
     <div class="grid">
       <section class="panel">
         <h2>Flusso messaggi</h2>
@@ -197,14 +270,42 @@
         </div>
 
         <div class="panel">
+          <h2>Diagnostica componenti</h2>
+          <div id="diagBody"><div class="empty">in caricamento…</div></div>
+        </div>
+
+        <div class="panel">
+          <h2>Ledger bloccate (azioni rapide)</h2>
+          <div id="stuckList"><div class="empty">nessuna entry bloccata</div></div>
+        </div>
+
+        <div class="panel">
           <h2>Warnings</h2>
           <div class="warnings" id="warnings"><div class="empty">nessun warning</div></div>
         </div>
       </aside>
     </div>
+    </div> <!-- /tab-overview -->
+
+    <div class="tabpane" id="tab-trace">
+      <div id="traceReco"></div>
+      <div class="panel">
+        <h2>Timeline evento per evento</h2>
+        <div id="traceMeta" class="empty">Esegui una ricerca per vedere la timeline di una richiesta.</div>
+        <div id="timeline" class="timeline"></div>
+      </div>
+      <div class="panel" style="margin-top:14px;">
+        <h2>Stato ledger per il device</h2>
+        <table class="kv" id="traceLedger"><tr><td class="empty">—</td></tr></table>
+      </div>
+      <div class="panel" style="margin-top:14px;" id="devicePanel" hidden>
+        <h2>Richieste recenti per questo device</h2>
+        <div id="deviceRows" class="device-rows"></div>
+      </div>
+    </div>
   </main>
 
-  <footer>Refresh ogni <span id="refreshSec">5</span>s · sorgenti: ServiceBus admin + Ledger blob enumeration · v1</footer>
+  <footer>Refresh ogni <span id="refreshSec">5</span>s · sorgenti: ServiceBus admin + Ledger blob + KQL (App Insights) · v2 troubleshooting</footer>
 
   <script>
     const REFRESH_MS = 5000;
@@ -300,6 +401,228 @@
 
       // Live dot
       document.getElementById('liveDot').style.background = ws.length ? 'var(--red)' : 'var(--green)';
+
+      renderDiagnostics(data.diagnostics);
+      renderStuckList(L.topStuck || []);
+    }
+
+    function renderDiagnostics(diag) {
+      const el = document.getElementById('diagBody');
+      if (!diag) { el.innerHTML = '<div class="empty">non disponibile</div>'; return; }
+      const lines = [];
+      const lastTick = diag.pollerLastTick ? new Date(diag.pollerLastTick).toLocaleString() : '—';
+      const hCls = (diag.pollerHealth||'').toLowerCase();
+      lines.push(`<div class="diag-line"><span>Poller status</span><span class="v ${hCls}">${(diag.pollerHealth||'unknown').toUpperCase()}</span></div>`);
+      lines.push(`<div class="diag-line"><span>Ultimo tick poller</span><span class="v">${lastTick}</span></div>`);
+      for (const [name, ts] of Object.entries(diag.capabilityLastSeen||{})) {
+        const txt = ts ? new Date(ts).toLocaleString() : 'mai visto';
+        const cls = ts ? 'green' : 'gray';
+        lines.push(`<div class="diag-line"><span>${name}</span><span class="v ${cls}">${txt}</span></div>`);
+      }
+      if (!diag.kqlAvailable) {
+        lines.push(`<div class="diag-line"><span>KQL</span><span class="v yellow">non configurato (Dashboard:LogsWorkspaceId)</span></div>`);
+      }
+      for (const i of (diag.issues||[])) {
+        lines.push(`<div class="diag-line"><span style="color:var(--red)">⚠</span><span class="v red">${escapeHtml(i)}</span></div>`);
+      }
+      el.innerHTML = lines.join('');
+    }
+
+    function renderStuckList(rows) {
+      const el = document.getElementById('stuckList');
+      if (!rows.length) { el.innerHTML = '<div class="empty">nessuna entry bloccata</div>'; return; }
+      el.innerHTML = '';
+      for (const r of rows) {
+        const div = document.createElement('div');
+        div.className = 'stuck-row';
+        div.innerHTML = `
+          <div>
+            <div><code>${escapeHtml(r.intuneDeviceId)}</code></div>
+            <div class="age">stuck da ${r.ageHours.toFixed(1)} h · corr ${escapeHtml(r.correlationId.substring(0,8))}…</div>
+          </div>
+          <button data-id="${escapeHtml(r.intuneDeviceId)}">Reset</button>`;
+        div.querySelector('button').addEventListener('click', () => doReset(r.intuneDeviceId));
+        el.appendChild(div);
+      }
+    }
+
+    // ─── search / trace / device ────────────────────────────────────────────
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function showTab(name) {
+      for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t.dataset.tab === name);
+      for (const p of document.querySelectorAll('.tabpane')) p.classList.toggle('active', p.id === 'tab-' + name);
+    }
+    for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
+
+    const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    document.getElementById('btnTrace').addEventListener('click', () => {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+      if (GUID_RE.test(q)) traceByCorr(q);
+      else recentByDevice(q);
+    });
+    document.getElementById('btnDevice').addEventListener('click', () => {
+      const q = document.getElementById('searchInput').value.trim();
+      if (q) recentByDevice(q);
+    });
+    document.getElementById('searchInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('btnTrace').click();
+    });
+
+    async function traceByCorr(corr) {
+      showTab('trace');
+      document.getElementById('traceMeta').textContent = 'caricamento…';
+      document.getElementById('traceReco').innerHTML = '';
+      document.getElementById('timeline').innerHTML = '';
+      document.getElementById('devicePanel').hidden = true;
+      try {
+        const r = await fetch('trace?corr=' + encodeURIComponent(corr), { cache:'no-store', credentials:'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).substring(0,200));
+        renderTrace(await r.json());
+      } catch (e) {
+        document.getElementById('traceMeta').textContent = 'errore: ' + e.message;
+      }
+    }
+
+    async function recentByDevice(q) {
+      showTab('trace');
+      document.getElementById('traceMeta').textContent = 'caricamento storico device…';
+      document.getElementById('traceReco').innerHTML = '';
+      document.getElementById('timeline').innerHTML = '';
+      document.getElementById('traceLedger').innerHTML = '<tr><td class="empty">—</td></tr>';
+      const panel = document.getElementById('devicePanel');
+      panel.hidden = false;
+      const body = document.getElementById('deviceRows');
+      body.innerHTML = '<div class="empty">caricamento…</div>';
+      try {
+        const r = await fetch('device?q=' + encodeURIComponent(q), { cache:'no-store', credentials:'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        document.getElementById('traceMeta').textContent = `Device: ${data.device} — ${(data.rows||[]).length} richieste recenti`;
+        if (!data.rows || data.rows.length === 0) {
+          body.innerHTML = '<div class="empty">nessuna richiesta recente trovata in App Insights</div>';
+          return;
+        }
+        body.innerHTML = '';
+        for (const row of data.rows) {
+          const div = document.createElement('div');
+          div.className = 'row';
+          div.innerHTML = `
+            <div><code>${escapeHtml(row.correlationId.substring(0,13))}…</code></div>
+            <div>${escapeHtml(row.lastEvent)} <span style="color:var(--muted)"> · ${new Date(row.lastEventAt).toLocaleString()}</span></div>
+            <div style="color:var(--accent)">Trace ›</div>`;
+          div.addEventListener('click', () => traceByCorr(row.correlationId));
+          body.appendChild(div);
+        }
+      } catch (e) {
+        document.getElementById('traceMeta').textContent = 'errore: ' + e.message;
+        body.innerHTML = '';
+      }
+    }
+
+    function classifyEvent(name) {
+      const n = (name||'').toLowerCase();
+      if (n.endsWith('.completed')) return 'completed';
+      if (n.endsWith('.failed') || n.includes('exception')) return 'failed';
+      if (n.includes('already-issued') || n.includes('dedup')) return 'dedup';
+      if (n.includes('rearmed')) return 'rearmed';
+      if (n.includes('accepted')) return 'accepted';
+      if (n.includes('enqueued')) return 'enqueued';
+      if (n.includes('received')) return 'received';
+      if (n.includes('forwarded')) return 'forwarded';
+      if (n.includes('consumed')) return 'consumed';
+      return '';
+    }
+
+    function renderTrace(t) {
+      document.getElementById('devicePanel').hidden = true;
+      const meta = `Correlation: ${escapeHtml(t.correlationId)} · Device: ${escapeHtml(t.deviceName||'—')} · Intune: ${escapeHtml(t.intuneDeviceId||'—')} · ${t.events.length} eventi`;
+      document.getElementById('traceMeta').textContent = meta;
+
+      // Recommendation banner
+      const rec = t.recommendation || { severity:'muted', title:'—', detail:'—', actionKind:'none' };
+      const rDiv = document.createElement('div');
+      rDiv.className = 'reco ' + (rec.severity || 'muted');
+      let actionHtml = '';
+      if (rec.actionKind === 'reset-ledger' && t.intuneDeviceId) {
+        actionHtml = `<button class="danger" data-id="${escapeHtml(t.intuneDeviceId)}">🔧 Reset ledger e riprova</button>`;
+      } else if (rec.actionKind === 'open-app-insights') {
+        actionHtml = `<button data-corr="${escapeHtml(rec.actionPayload || t.correlationId)}">Apri in App Insights</button>`;
+      } else if (rec.actionKind === 'open-azure-portal') {
+        actionHtml = `<button data-portal="${escapeHtml(rec.actionPayload || '')}">Apri portale Azure</button>`;
+      }
+      rDiv.innerHTML = `<h3>${escapeHtml(rec.title)}</h3><p>${escapeHtml(rec.detail)}</p>${actionHtml}`;
+      const btn = rDiv.querySelector('button');
+      if (btn) {
+        if (btn.dataset.id) btn.addEventListener('click', () => doReset(btn.dataset.id));
+        else if (btn.dataset.corr) btn.addEventListener('click', () => alert('Cerca questo correlationId in App Insights:\n' + btn.dataset.corr));
+        else if (btn.dataset.portal !== undefined) btn.addEventListener('click', () => alert('Apri il portale Azure e cerca:\n' + btn.dataset.portal));
+      }
+      const recHost = document.getElementById('traceReco');
+      recHost.innerHTML = '';
+      recHost.appendChild(rDiv);
+
+      // Timeline
+      const tl = document.getElementById('timeline');
+      tl.innerHTML = '';
+      for (const e of t.events) {
+        const div = document.createElement('div');
+        div.className = 'tev ' + classifyEvent(e.name);
+        const extras = [];
+        if (e.deviceName) extras.push('dev=' + e.deviceName);
+        if (e.intuneDeviceId) extras.push('intune=' + e.intuneDeviceId.substring(0,8) + '…');
+        if (e.reason) extras.push('reason=' + e.reason);
+        if (e.rearmReason) extras.push('rearm=' + e.rearmReason);
+        if (e.originalCorrelationId) extras.push('orig=' + e.originalCorrelationId.substring(0,8) + '…');
+        div.innerHTML = `
+          <div class="ts">${new Date(e.timestamp).toLocaleTimeString()}<br><span style="font-size:10px">${new Date(e.timestamp).toLocaleDateString()}</span></div>
+          <div class="role">${escapeHtml(e.role||'?')}</div>
+          <div class="body">${escapeHtml(e.name)}${extras.length ? '<span class="small">' + escapeHtml(extras.join(' · ')) + '</span>' : ''}</div>`;
+        tl.appendChild(div);
+      }
+      if (t.events.length === 0) {
+        tl.innerHTML = '<div class="empty">nessun evento trovato in App Insights. Verifica che Dashboard:LogsWorkspaceId sia configurato e che la Web UAMI abbia ruolo Log Analytics Reader.</div>';
+      }
+
+      // Ledger summary
+      const tbl = document.getElementById('traceLedger');
+      const ls = t.ledgerSummary;
+      if (!ls) {
+        tbl.innerHTML = '<tr><td class="empty">nessuna entry ledger associata a questo device</td></tr>';
+      } else {
+        tbl.innerHTML = `
+          <tr><th>State</th><td>${escapeHtml(ls.state||'—')}</td></tr>
+          <tr><th>IssuedAt</th><td>${ls.issuedAt ? new Date(ls.issuedAt).toLocaleString() : '—'}</td></tr>
+          <tr><th>LastTerminalState</th><td>${escapeHtml(ls.lastTerminalState||'—')}</td></tr>
+          <tr><th>LastRearmedAt</th><td>${ls.lastRearmedAt ? new Date(ls.lastRearmedAt).toLocaleString() : '—'}</td></tr>
+          <tr><th>CorrelationId (corrente)</th><td><code>${escapeHtml(ls.correlationId||'—')}</code></td></tr>
+          <tr><th>ActionSequence</th><td>${ls.actionSequence ?? 0}</td></tr>`;
+      }
+    }
+
+    async function doReset(intuneDeviceId) {
+      const reason = prompt(`Reset ledger per device ${intuneDeviceId}?\n\nQuesta operazione archivia l'entry corrente — la prossima richiesta avrà un nuovo correlationId e raggiungerà Graph.\n\nMotivo (obbligatorio):`);
+      if (!reason || !reason.trim()) return;
+      try {
+        const r = await fetch('actions/reset-ledger', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          credentials:'same-origin',
+          body: JSON.stringify({ intuneDeviceId, reason: reason.trim() }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          alert('Reset fallito (HTTP ' + r.status + '): ' + (body.message || 'errore sconosciuto'));
+          return;
+        }
+        alert('Reset OK. Archiviato come:\n' + (body.archive||'?') + '\n\nOra puoi rilanciare la richiesta dal client.');
+        tick();
+      } catch (e) {
+        alert('Reset fallito: ' + e.message);
+      }
     }
 
     async function tick() {

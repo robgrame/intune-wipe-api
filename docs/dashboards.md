@@ -17,16 +17,31 @@ reale per scegliere quale tenere.
 ```
 Dashboard:Enabled                    = true
 Dashboard:AllowedCertThumbprints     = <thumb1>,<thumb2>   # opzionale; fallback ad Idempotency:AdminCertThumbprints
+Dashboard:LogsWorkspaceId            = <LAW customerId GUID>  # richiesto per trace/timeline (v2)
+Idempotency:AdminApiEnabled          = true                  # richiesto per il bottone "Reset ledger"
 ```
 
-**Cosa mostra**:
-- Topologia Client → Web → SB action-requests → Proc → SB action-dispatch → SB *-action × 4 → capability apps → Graph.
-- Ogni nodo colorato per stato (verde / giallo / rosso / grigio) basato su queue depth real-time.
-- Particelle SVG che fluiscono lungo gli edge dove c'è traffico (active > 0 sulla coda destinazione).
-- Pannello laterale: ledger totale, entries stuck (Issued + nessun terminale dopo grace), code, warnings.
+**RBAC richiesto sulla Web UAMI**:
+- `Monitoring Reader` sul namespace Service Bus (overview code).
+- `Storage Blob Data Reader` (o superiore) sullo storage `idactionsstpdev` container `action-ledger`.
+- `Log Analytics Reader` sul workspace dietro App Insights `idactions-ai-dev` (v2 trace/timeline).
+  - Trovalo con: `az monitor app-insights component show -g RG-INTUNE-DEVICEACTIONS -n idactions-ai-dev --query workspaceResourceId`
+  - Poi: `az monitor log-analytics workspace show --ids <ws-id> --query customerId` → quello è il valore di `Dashboard:LogsWorkspaceId`.
+
+**Cosa mostra (v2 troubleshooting end-to-end)**:
+- **Panoramica**: topologia Client → Web → SB action-requests → Proc → SB action-dispatch → SB *-action × 4 → capability apps → Graph, con nodi colorati per stato (verde/giallo/rosso/grigio) basato su queue depth real-time e particelle SVG che fluiscono dove c'è traffico.
+- **Search bar globale**: incolla un `correlationId` GUID, un `intuneDeviceId` GUID, oppure il hostname (es. `FC1DSK005`) → in un click vedi cosa è successo.
+- **Trace timeline per correlationId**: timeline verticale evento-per-evento dell'intera pipeline (Web `accepted`, Proc `received/forwarded`, capability `consumed/completed/failed`, ledger `already-issued/rearmed`). Colorata per severità e con badge del role che ha emesso l'evento.
+- **Recommendation engine**: dato l'ultimo evento, il cruscotto suggerisce in italiano cosa fare. Tre azioni 1-click:
+  - 🔧 **Reset ledger e riprova** — quando il ledger ha marcato `Issued` senza terminale (caso FC1DSK005 del 11/06): bottone che richiama `POST /api/dashboard/actions/reset-ledger`, archivia l'entry corrente sotto `_archive/` e libera il device per una nuova richiesta. Richiede prompt per il `reason` (auditato).
+  - 🔍 **Apri in App Insights** — quando serve la stack trace completa di un'exception runtime.
+  - 🌐 **Apri portale Azure** — quando serve l'ispezione di un componente upstream (es. coda DLQ).
+- **Diagnostica componenti**: ultimo tick del poller, freschezza delle ultime invocazioni per ciascuna capability app, problemi rilevati (es. KQL non configurato).
+- **Ledger bloccate (azioni rapide)**: top entry stuck con bottone Reset diretto in panoramica.
+- **Storico device**: cerca per hostname → vedi le ultime N richieste con timestamp + ultimo evento, cliccando vai al trace.
 
 **Limitazioni note**:
-- Solo snapshot real-time (no trend storico). Per analisi temporale usare Grafana o App Insights direttamente.
+- Snapshot panoramica è real-time, ma trace si basa su App Insights → ritardo ~30s-2min per ingestion.
 - Funzioni *DashboardFunction* non sono cacheable: ogni `GET /api/dashboard/data` fa fan-out SB admin + enumeration ledger. Su un RG con migliaia di entry di ledger, considerare paginazione/caching.
 - Auth identica al resto del Web (mTLS + function key); accesso da browser richiede certificato client installato.
 
