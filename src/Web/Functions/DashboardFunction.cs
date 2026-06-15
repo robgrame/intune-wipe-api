@@ -11,15 +11,17 @@ using Microsoft.Extensions.Logging;
 namespace IntuneDeviceActions.Functions;
 
 /// <summary>
-/// Operator "cruscotto" — single-page flow-of-energy view + end-to-end
-/// troubleshooting console. All routes share the same defense-in-depth as
-/// the ledger admin endpoint: Function key, <c>Dashboard:Enabled</c> kill
-/// switch, mTLS, operator thumbprint allow-list. The dashboard reuses the
-/// ledger admin's allow-list as a fallback so an operator already trusted
-/// for reset can reach the dashboard without a duplicate config key.
+/// HTTP API consumed by the external operator portal (separate repo
+/// <c>intune-wipe-web</c> hosted on <c>idactions-portal</c>) to expose
+/// real-time pipeline state and operator remediation actions. This file
+/// owns the JSON contract only — there is no UI here. Routes share the
+/// same defense-in-depth as the ledger admin endpoint: Function key,
+/// <c>Dashboard:Enabled</c> kill switch, mTLS, operator thumbprint
+/// allow-list (falls back to <c>Idempotency:AdminCertThumbprints</c> so
+/// an operator already trusted for reset reaches the dashboard with no
+/// duplicate config key).
 /// Routes:
 /// <list type="bullet">
-///   <item><c>GET  /api/dashboard</c> — single-page UI (HTML+JS+SVG, polled).</item>
 ///   <item><c>GET  /api/dashboard/data</c> — overview snapshot (queues, ledger, diagnostics).</item>
 ///   <item><c>GET  /api/dashboard/trace?corr={correlationId}</c> — full lifecycle of a request + recommendation.</item>
 ///   <item><c>GET  /api/dashboard/device?q={hostname-or-intune-id}</c> — recent requests for a device.</item>
@@ -35,7 +37,6 @@ public sealed class DashboardFunction
     private readonly ILogger<DashboardFunction> _log;
     private readonly HashSet<string> _allowedThumbprints;
 
-    private static readonly Lazy<string> CachedHtml = new(LoadEmbeddedHtml);
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -57,19 +58,6 @@ public sealed class DashboardFunction
             .Select(t => t.Replace(":", "").Replace(" ", "").ToUpperInvariant())
             .Where(t => t.Length > 0)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
-    [Function("Dashboard_Page")]
-    public IActionResult GetPage(
-        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "dashboard")] HttpRequest req)
-    {
-        if (!Allowed(req, out var deny, out _)) return deny!;
-        return new ContentResult
-        {
-            Content = CachedHtml.Value,
-            ContentType = "text/html; charset=utf-8",
-            StatusCode = (int)HttpStatusCode.OK,
-        };
     }
 
     [Function("Dashboard_Data")]
@@ -231,18 +219,5 @@ public sealed class DashboardFunction
         callerThumbprint = thumb;
         deny = null;
         return true;
-    }
-
-    private static string LoadEmbeddedHtml()
-    {
-        var asm = typeof(DashboardFunction).Assembly;
-        var resourceName = asm.GetManifestResourceNames()
-            .FirstOrDefault(n => n.EndsWith(".dashboard.html", StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException(
-                "dashboard.html not found among embedded resources. Add <EmbeddedResource Include=\"Dashboard\\dashboard.html\" /> to the Web .csproj.");
-        using var stream = asm.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Cannot open embedded resource {resourceName}");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
     }
 }

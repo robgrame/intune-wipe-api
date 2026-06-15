@@ -23,6 +23,9 @@
     "namePrefix": {
       "value": "idactions"
     },
+    "nameSuffix": {
+      "value": "dev"
+    },
     "revocationMode": {
       "value": "Online"
     },

@@ -379,6 +379,33 @@ function Invoke-InfraDeploy {
     if ($SkipInfra) { Write-Warn2 'Skipping infra deploy (-SkipInfra).'; return }
     Write-Step "Bicep deploy -> $ResourceGroup ($Location)"
     & az group create -n $ResourceGroup -l $Location --only-show-errors -o none
+
+    # Guard against the silent-duplication trap: if the RG already contains
+    # resources whose names suggest a different nameSuffix than the one this
+    # invocation is about to use, we would parallel-deploy a brand-new stack
+    # (and double the bill). Bail out unless the operator explicitly opts in.
+    $effectiveSuffix = if ($script:NameSuffixOverridden) {
+        $NameSuffix
+    } else {
+        $pf = Get-Content $ParametersFile -Raw | ConvertFrom-Json
+        $pf.parameters.nameSuffix.value
+    }
+    if ($effectiveSuffix) {
+        $existing = & az resource list -g $ResourceGroup `
+            --query "[?starts_with(name, '$NamePrefix-uami-')].name" -o tsv 2>$null
+        if ($LASTEXITCODE -eq 0 -and $existing) {
+            $foreignSuffixes = $existing |
+                ForEach-Object { ($_ -replace "^$NamePrefix-uami-", '') -replace '-(autopilot|bitlocker|web|wipe|portal|rename)$', '' } |
+                Where-Object { $_ -and $_ -ne $effectiveSuffix -and $_ -ne 'portal' } |
+                Sort-Object -Unique
+            if ($foreignSuffixes) {
+                Write-Warn2 "RG '$ResourceGroup' already contains resources with nameSuffix '$($foreignSuffixes -join ''',''')' — this deploy uses '$effectiveSuffix'."
+                Write-Warn2 "Continuing would create a PARALLEL stack and double the bill. Pass -NameSuffix to override explicitly, or align main.parameters.json."
+                throw "Aborting to prevent silent duplication. Run with -NameSuffix '$($foreignSuffixes[0])' to update the existing stack."
+            }
+        }
+    }
+
     $deployName = "$NamePrefix-deploy-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
     Write-Host "    deployment name: $deployName"
     $azArgs = @(
