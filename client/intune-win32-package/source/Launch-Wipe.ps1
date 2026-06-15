@@ -237,7 +237,7 @@ try {
                 }
                 if ($msg) { Add-WipeFormLog -Form $form -Message ("Server message : {0}" -f $msg) -Kind muted }
                 Add-WipeFormLog -Form $form -Message 'Intune prenderà in carico il comando entro pochi minuti.' -Kind muted
-                Add-WipeFormLog -Form $form -Message 'Usa "Monitora avanzamento live" per seguire gli stati riportati da Intune.' -Kind muted
+                Add-WipeFormLog -Form $form -Message 'Apro automaticamente il monitor avanzamento live...' -Kind muted
 
                 $openLive = $null
                 if (Get-Command Show-WipeProgressDialog -ErrorAction SilentlyContinue) {

@@ -338,6 +338,15 @@ function Complete-WipeForm {
         $Form.OpenLiveProgressBtn.Add_Click({
             try { & $captured $Form.CorrelationId } catch { }
         }.GetNewClosure())
+
+        # Auto-open the live progress dialog so the operator sees in-flight
+        # state without having to click the button first. Scheduled via
+        # BeginInvoke so it fires after Complete-WipeForm returns and the
+        # final paint of the parent form has settled.
+        $btn = $Form.OpenLiveProgressBtn
+        [void]$Form.BeginInvoke([Action]{
+            try { $btn.PerformClick() } catch { }
+        })
     }
 
     $Form.ProgressCloseBtn.Enabled = $true
